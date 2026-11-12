@@ -342,7 +342,7 @@ impl Zoc {
                             self.sync_rows(cx);
                         }
                     }
-                    StreamChange::Session(_) => {
+                    StreamChange::Session => {
                         if matches!(kind, "session.execution.succeeded" | "session.execution.failed"
                             | "session.execution.interrupted" | "session.deleted") {
                             self.refresh_sessions();
