@@ -1,7 +1,10 @@
 use crate::api::{Agent, Connection, Model, ModelRef, Project, Session};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
-use std::{collections::{HashMap, HashSet, VecDeque}, path::PathBuf};
+use serde_json::{Value, json};
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    path::PathBuf,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum InboxGroup {
@@ -43,8 +46,10 @@ fn prefs_path() -> Option<PathBuf> {
 
 impl Preferences {
     pub fn load() -> Self {
-        prefs_path().and_then(|path| std::fs::read(path).ok())
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default()
+        prefs_path()
+            .and_then(|path| std::fs::read(path).ok())
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default()
     }
 
     pub fn save(&self) {
@@ -125,55 +130,94 @@ impl Default for AppState {
 
 impl AppState {
     pub fn active_session(&self) -> Option<&Session> {
-        self.sessions.iter().find(|s| Some(&s.id) == self.current_session.as_ref())
+        self.sessions
+            .iter()
+            .find(|s| Some(&s.id) == self.current_session.as_ref())
     }
 
     pub fn project_directory(&self) -> Option<&str> {
-        self.projects.iter().find(|p| Some(&p.id) == self.current_project.as_ref())
+        self.projects
+            .iter()
+            .find(|p| Some(&p.id) == self.current_project.as_ref())
             .map(|p| p.canonical.as_str())
     }
 
     pub fn session_directory(&self) -> Option<&str> {
-        self.active_session().map(|s| s.location.directory.as_str())
+        self.active_session()
+            .map(|s| s.location.directory.as_str())
             .or_else(|| self.project_directory())
     }
 
     pub fn classify(&self, session: &Session) -> InboxGroup {
-        if self.permissions.get(&session.id).is_some_and(|items| !items.is_empty())
-            || self.forms.get(&session.id).is_some_and(|items| !items.is_empty()) {
+        if self
+            .permissions
+            .get(&session.id)
+            .is_some_and(|items| !items.is_empty())
+            || self
+                .forms
+                .get(&session.id)
+                .is_some_and(|items| !items.is_empty())
+        {
             return InboxGroup::Attention;
         }
-        if session.time.busy.is_some_and(|busy| busy > session.time.idle.unwrap_or(0)) {
+        if session
+            .time
+            .busy
+            .is_some_and(|busy| busy > session.time.idle.unwrap_or(0))
+        {
             return InboxGroup::Working;
         }
-        let viewed = self.prefs.read.get(&session.id).copied()
+        let viewed = self
+            .prefs
+            .read
+            .get(&session.id)
+            .copied()
             .unwrap_or(session.time.viewed.unwrap_or(0));
-        if session.time.idle.is_some_and(|idle| idle > viewed) || (session.outcome.as_deref() == Some("failed") && session.time.updated > viewed) {
+        if session.time.idle.is_some_and(|idle| idle > viewed)
+            || (session.outcome.as_deref() == Some("failed") && session.time.updated > viewed)
+        {
             return InboxGroup::Unread;
         }
         InboxGroup::Recent
     }
 
     pub fn sorted_inbox(&self, group: InboxGroup, filter: &str) -> Vec<Session> {
-        let mut list: Vec<_> = self.sessions.iter()
+        let mut list: Vec<_> = self
+            .sessions
+            .iter()
             .filter(|s| self.classify(s) == group)
-            .filter(|s| filter.is_empty()
-                || s.title.as_deref().unwrap_or("").to_lowercase().contains(&filter.to_lowercase())
-                || s.id.to_lowercase().contains(&filter.to_lowercase()))
-            .cloned().collect();
-        list.sort_by_key(|s| std::cmp::Reverse(if group == InboxGroup::Working {
-            s.time.busy.unwrap_or(s.time.created)
-        } else { s.time.updated.max(s.time.created) }));
+            .filter(|s| {
+                filter.is_empty()
+                    || s.title
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .contains(&filter.to_lowercase())
+                    || s.id.to_lowercase().contains(&filter.to_lowercase())
+            })
+            .cloned()
+            .collect();
+        list.sort_by_key(|s| {
+            std::cmp::Reverse(if group == InboxGroup::Working {
+                s.time.busy.unwrap_or(s.time.created)
+            } else {
+                s.time.updated.max(s.time.created)
+            })
+        });
         list
     }
 
     pub fn select_session(&mut self, session: String) {
-        if self.current_session.as_ref() == Some(&session) { return; }
+        if self.current_session.as_ref() == Some(&session) {
+            return;
+        }
         self.current_session = Some(session.clone());
         self.prefs.last_session = Some(session.clone());
         self.epoch = self.epoch.wrapping_add(1);
-        if let Some((idle, model, agent)) = self.active_session()
-            .map(|entry| (entry.time.idle, entry.model.clone(), entry.agent.clone())) {
+        if let Some((idle, model, agent)) = self
+            .active_session()
+            .map(|entry| (entry.time.idle, entry.model.clone(), entry.agent.clone()))
+        {
             if let Some(idle) = idle {
                 self.prefs.read.insert(session.clone(), idle);
             }
@@ -187,23 +231,33 @@ impl AppState {
 
     pub fn set_messages(&mut self, session: &str, messages: Vec<Value>) {
         self.messages.insert(session.to_string(), messages);
-        self.finalized.retain(|key| !key.starts_with(&format!("{session}:")));
+        self.finalized
+            .retain(|key| !key.starts_with(&format!("{session}:")));
     }
 
     fn message(&mut self, session: &str, message: &str) -> &mut Value {
         let entries = self.messages.entry(session.to_string()).or_default();
-        let index = entries.iter().position(|m| m["id"] == message).unwrap_or_else(|| {
-            entries.push(json!({"id":message,"type":"assistant","content":[],"time":{"created":0}}));
-            entries.len() - 1
-        });
+        let index = entries
+            .iter()
+            .position(|m| m["id"] == message)
+            .unwrap_or_else(|| {
+                entries.push(
+                    json!({"id":message,"type":"assistant","content":[],"time":{"created":0}}),
+                );
+                entries.len() - 1
+            });
         &mut entries[index]
     }
 
     fn content(&mut self, session: &str, message: &str, ordinal: usize, kind: &str) -> &mut Value {
         let msg = self.message(session, message);
-        if !msg["content"].is_array() { msg["content"] = json!([]); }
+        if !msg["content"].is_array() {
+            msg["content"] = json!([]);
+        }
         let parts = msg["content"].as_array_mut().expect("initialized array");
-        while parts.len() <= ordinal { parts.push(json!({"type":"unknown"})); }
+        while parts.len() <= ordinal {
+            parts.push(json!({"type":"unknown"}));
+        }
         if parts[ordinal]["type"] != kind && parts[ordinal]["type"] == "unknown" {
             parts[ordinal] = json!({"type":kind,"text":""});
         }
@@ -212,9 +266,13 @@ impl AppState {
 
     fn tool(&mut self, session: &str, message: &str, tool_id: &str, name: &str) -> &mut Value {
         let msg = self.message(session, message);
-        if !msg["content"].is_array() { msg["content"] = json!([]); }
+        if !msg["content"].is_array() {
+            msg["content"] = json!([]);
+        }
         let parts = msg["content"].as_array_mut().expect("initialized array");
-        let ix = parts.iter().position(|p| p["type"] == "tool" && p["id"] == tool_id)
+        let ix = parts
+            .iter()
+            .position(|p| p["type"] == "tool" && p["id"] == tool_id)
             .unwrap_or_else(|| {
                 parts.push(json!({"type":"tool","id":tool_id,"name":name,
                     "state":{"status":"streaming","input":""}}));
@@ -227,9 +285,13 @@ impl AppState {
     /// The server is authoritative; a complete snapshot is fetched after a stream interruption.
     pub fn apply_stream(&mut self, event: &Value) -> StreamChange {
         if let Some(id) = event["id"].as_str() {
-            if !self.seen_events.insert(id.to_string()) { return StreamChange::None; }
+            if !self.seen_events.insert(id.to_string()) {
+                return StreamChange::None;
+            }
             self.event_fifo.push_back(id.to_string());
-            if self.event_fifo.len() > 4096 && let Some(old) = self.event_fifo.pop_front() {
+            if self.event_fifo.len() > 4096
+                && let Some(old) = self.event_fifo.pop_front()
+            {
                 self.seen_events.remove(&old);
             }
         }
@@ -238,12 +300,20 @@ impl AppState {
         let session = data["sessionID"].as_str().unwrap_or("");
         let assistant = data["assistantMessageID"].as_str().unwrap_or("");
         let ordinal = data["ordinal"].as_u64().unwrap_or(0) as usize;
-        if ordinal > 10_000 { return StreamChange::None; }
+        if ordinal > 10_000 {
+            return StreamChange::None;
+        }
         let key = format!("{session}:{assistant}:{ordinal}");
         match typ {
             "session.text.delta" | "session.reasoning.delta" => {
-                if self.finalized.contains(&key) { return StreamChange::None; }
-                let kind = if typ.contains("reasoning") { "reasoning" } else { "text" };
+                if self.finalized.contains(&key) {
+                    return StreamChange::None;
+                }
+                let kind = if typ.contains("reasoning") {
+                    "reasoning"
+                } else {
+                    "text"
+                };
                 let delta = data["delta"].as_str().unwrap_or("");
                 let part = self.content(session, assistant, ordinal, kind);
                 let text = part["text"].as_str().unwrap_or("").to_string() + delta;
@@ -251,25 +321,37 @@ impl AppState {
                 StreamChange::Message(session.to_string())
             }
             "session.text.ended" | "session.reasoning.ended" => {
-                let kind = if typ.contains("reasoning") { "reasoning" } else { "text" };
+                let kind = if typ.contains("reasoning") {
+                    "reasoning"
+                } else {
+                    "text"
+                };
                 self.finalized.insert(key);
                 self.content(session, assistant, ordinal, kind)["text"] = data["text"].clone();
                 StreamChange::Message(session.to_string())
             }
-            "session.tool.called" | "session.tool.progress"
-                | "session.tool.success" | "session.tool.failed" => {
+            "session.tool.called"
+            | "session.tool.progress"
+            | "session.tool.success"
+            | "session.tool.failed" => {
                 let id = data["id"].as_str().unwrap_or("");
                 let name = data["name"].as_str().unwrap_or("tool");
                 let tool = self.tool(session, assistant, id, name);
                 match typ {
                     "session.tool.called" => {
-                        if tool["state"]["status"].as_str().is_some_and(|s| s == "completed" || s == "error") {
+                        if tool["state"]["status"]
+                            .as_str()
+                            .is_some_and(|s| s == "completed" || s == "error")
+                        {
                             return StreamChange::None;
                         }
                         tool["name"] = Value::String(name.to_owned());
-                        tool["state"] = json!({"status":"running","input":data["input"],"metadata":{}});
+                        tool["state"] =
+                            json!({"status":"running","input":data["input"],"metadata":{}});
                     }
-                    "session.tool.progress" => { tool["state"]["metadata"] = data["metadata"].clone(); }
+                    "session.tool.progress" => {
+                        tool["state"]["metadata"] = data["metadata"].clone();
+                    }
                     "session.tool.success" => {
                         tool["state"] = json!({"status":"completed","content":data["content"],
                             "input":tool["state"]["input"],"metadata":data["metadata"]});
@@ -284,7 +366,9 @@ impl AppState {
             }
             "permission.asked" => {
                 let entry = self.permissions.entry(session.to_string()).or_default();
-                if !entry.iter().any(|p| p["id"] == data["id"]) { entry.push(data.clone()); }
+                if !entry.iter().any(|p| p["id"] == data["id"]) {
+                    entry.push(data.clone());
+                }
                 StreamChange::Requests
             }
             "permission.replied" => {
@@ -297,7 +381,9 @@ impl AppState {
                 let form = &data["form"];
                 let target = form["sessionID"].as_str().unwrap_or(session);
                 let entry = self.forms.entry(target.to_string()).or_default();
-                if !entry.iter().any(|f| f["id"] == form["id"]) { entry.push(form.clone()); }
+                if !entry.iter().any(|f| f["id"] == form["id"]) {
+                    entry.push(form.clone());
+                }
                 StreamChange::Requests
             }
             "form.replied" | "form.cancelled" => {
@@ -312,31 +398,44 @@ impl AppState {
                 }
                 StreamChange::Session
             }
-            "session.execution.succeeded" | "session.execution.failed" | "session.execution.interrupted"
-                | "session.renamed" | "session.archived" | "session.unarchived" | "session.deleted" => {
-                StreamChange::Session
-            }
-            "session.text.started" | "session.reasoning.started" | "session.tool.input.started"
-                | "session.step.started" | "server.connected" => StreamChange::None,
+            "session.execution.succeeded"
+            | "session.execution.failed"
+            | "session.execution.interrupted"
+            | "session.renamed"
+            | "session.archived"
+            | "session.unarchived"
+            | "session.deleted" => StreamChange::Session,
+            "session.text.started"
+            | "session.reasoning.started"
+            | "session.tool.input.started"
+            | "session.step.started"
+            | "server.connected" => StreamChange::None,
             _ => StreamChange::None,
         }
     }
 
     pub fn active_messages(&self) -> &[Value] {
-        self.current_session.as_ref()
+        self.current_session
+            .as_ref()
             .and_then(|s| self.messages.get(s))
             .map(Vec::as_slice)
             .unwrap_or(&[])
     }
 
     pub fn active_permissions(&self) -> &[Value] {
-        self.current_session.as_ref().and_then(|s| self.permissions.get(s))
-            .map(Vec::as_slice).unwrap_or(&[])
+        self.current_session
+            .as_ref()
+            .and_then(|s| self.permissions.get(s))
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 
     pub fn active_forms(&self) -> &[Value] {
-        self.current_session.as_ref().and_then(|s| self.forms.get(s))
-            .map(Vec::as_slice).unwrap_or(&[])
+        self.current_session
+            .as_ref()
+            .and_then(|s| self.forms.get(s))
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 }
 
@@ -355,7 +454,12 @@ mod tests {
         let mut state = AppState::default();
         for (id, busy, updated) in [("a", 100, 999), ("b", 200, 201)] {
             state.sessions.push(Session {
-                id: id.into(), time: crate::api::Times { busy: Some(busy), updated, ..Default::default() },
+                id: id.into(),
+                time: crate::api::Times {
+                    busy: Some(busy),
+                    updated,
+                    ..Default::default()
+                },
                 ..Default::default()
             });
         }
@@ -382,6 +486,9 @@ mod tests {
         let base = json!({"sessionID":"s","assistantMessageID":"m","id":"tool0"});
         state.apply_stream(&json!({"id":"1","type":"session.tool.success","data":base}));
         state.apply_stream(&json!({"id":"2","type":"session.tool.called","data":base}));
-        assert_eq!(state.messages["s"][0]["content"][0]["state"]["status"], "completed");
+        assert_eq!(
+            state.messages["s"][0]["content"][0]["state"]["status"],
+            "completed"
+        );
     }
 }
