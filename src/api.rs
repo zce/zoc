@@ -73,9 +73,11 @@ pub struct Times {
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct Session {
     pub id: String,
-    pub projectID: String,
+    #[serde(rename = "projectID")]
+    pub project_id: String,
     #[serde(default)]
-    pub parentID: Option<String>,
+    #[serde(rename = "parentID")]
+    pub parent_id: Option<String>,
     #[serde(default)]
     pub title: Option<String>,
     #[serde(default)]
@@ -93,14 +95,15 @@ pub struct Session {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct ModelRef {
     pub id: String,
-    pub providerID: String,
+    #[serde(rename = "providerID")]
+    pub provider_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub variant: Option<String>,
 }
 
 impl ModelRef {
     pub fn display(&self) -> String {
-        format!("{}/{}{}", self.providerID, self.id,
+        format!("{}/{}{}", self.provider_id, self.id,
             self.variant.as_ref().map(|v| format!("#{v}")).unwrap_or_default())
     }
 }
@@ -108,7 +111,8 @@ impl ModelRef {
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct Model {
     pub id: String,
-    pub providerID: String,
+    #[serde(rename = "providerID")]
+    pub provider_id: String,
     pub name: String,
     #[serde(default)]
     pub variants: Vec<Variant>,
@@ -295,7 +299,7 @@ impl ServiceClient {
             if let Some(ref cursor) = cursor { query.push(("cursor", cursor)); }
             let response = self.get("/api/session", &query)?;
             let items: Vec<Session> = serde_json::from_value(response["data"].clone())?;
-            result.extend(items);
+            result.extend(items.into_iter().filter(|s| s.project_id == project && s.parent_id.is_none()));
             cursor = response.pointer("/cursor/next").and_then(Value::as_str).map(str::to_owned);
             if cursor.is_none() { break; }
         }
@@ -484,7 +488,7 @@ mod tests {
 
     #[test]
     fn model_reference_keeps_variant() {
-        let model = ModelRef { providerID: "openai".into(), id: "gpt-6".into(), variant: Some("high".into()) };
+        let model = ModelRef { provider_id: "openai".into(), id: "gpt-6".into(), variant: Some("high".into()) };
         assert_eq!(model.display(), "openai/gpt-6#high");
         assert_eq!(serde_json::to_value(model).unwrap()["variant"], "high");
     }
