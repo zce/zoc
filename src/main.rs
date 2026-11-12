@@ -3,13 +3,17 @@ mod state;
 
 use api::{Command, Event, ModelRef};
 use gpui_kit::component::{
-    ActiveTheme, button::Button, input::{Input, InputState, Textarea, TextareaState},
+    ActiveTheme, Sizable as _, h_flex, v_flex,
+    button::{Button, ButtonVariants as _},
+    scroll::ScrollableElement as _,
+    input::{Input, InputState, Textarea, TextareaState},
     message_scroller::{MessageScroller, MessageScrollerState},
     text::{TextView, TextViewState},
 };
 use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::base::StyledExt as _;
 use gpui_kit::*;
-use serde_json::{json, Value};
+use serde_json::Value;
 use state::{AppState, InboxGroup, StreamChange};
 use std::{cell::RefCell, collections::{HashMap, HashSet}, rc::Rc, sync::mpsc::Sender};
 
@@ -362,7 +366,7 @@ impl Zoc {
     }
 
     fn row_from_value(&mut self, message: &Value, cx: &mut Context<Self>) -> MessageRow {
-        let session = self.data.current_session.as_deref().unwrap_or("");
+        let session = self.data.current_session.clone().unwrap_or_default();
         let id = message["id"].as_str().unwrap_or("unknown").to_owned();
         let role = message["type"].as_str().unwrap_or("unknown").to_owned();
         let mut parts = Vec::new();
@@ -547,7 +551,7 @@ impl Zoc {
                 .child(Input::new(&self.search))
                 .child(div().text_xs().text_color(muted)
                     .child(format!("{} sessions", session_count))))
-            .child(div().flex_1().min_h_0().overflow_y_scroll().child(groups))
+            .child(div().flex_1().min_h_0().overflow_y_scrollbar().child(groups))
             .child(v_flex().p_3().gap_2().border_t_1().border_color(border)
                 .child(h_flex().gap_1()
                     .child(Button::new("archive-toggle").ghost().small()
@@ -814,7 +818,7 @@ impl Zoc {
         } else {
             panel = panel.child(div().px_3().py_2().text_xs().child(self.data.preview.as_ref()
                 .map(|(name, _)| name.clone()).unwrap_or_else(|| "No file selected".into())))
-                .child(div().flex_1().min_h_0().overflow_y_scroll().p_3()
+                .child(div().flex_1().min_h_0().overflow_y_scrollbar().p_3()
                     .child(TextView::new(&self.preview_view).selectable(true)));
         }
         panel.child(h_flex().gap_1().p_2().border_t_1().border_color(border)
