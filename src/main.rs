@@ -258,7 +258,7 @@ impl Zoc {
                 self.data.agents = agents;
                 if self.data.selected_model.is_none() {
                     self.data.selected_model = self.data.models.first().map(|model| ModelRef {
-                        id: model.id.clone(), providerID: model.providerID.clone(), variant: None,
+                        id: model.id.clone(), provider_id: model.provider_id.clone(), variant: None,
                     });
                 }
                 if self.data.selected_agent.is_none() {
@@ -646,7 +646,7 @@ impl Zoc {
                         v = v.child(Button::new(format!("file-{id}-{index}")).small()
                             .ghost().label(file.clone())
                             .on_click(move |_, _, cx| {
-                                let _ = owner.update(cx, |this, cx| {
+                                owner.update(cx, |this, cx| {
                                     this.open_file(file.clone()); cx.notify();
                                 });
                             }));
@@ -742,11 +742,11 @@ impl Zoc {
             .rounded_md().bg(cx.theme().popover);
         for model in self.data.models.iter().take(75) {
             let model_ref = ModelRef {
-                providerID: model.providerID.clone(),
+                provider_id: model.provider_id.clone(),
                 id: model.id.clone(),
                 variant: None,
             };
-            let label = format!("{} · {}", model.providerID, model.name);
+            let label = format!("{} · {}", model.provider_id, model.name);
             view = view.child(Button::new(format!("model-{}", model_ref.display()))
                 .ghost().small().label(label)
                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -773,7 +773,7 @@ impl Zoc {
 
     fn render_variant_picker(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(model) = self.data.selected_model.as_ref() else { return div().into_any_element(); };
-        let Some(model_info) = self.data.models.iter().find(|m| m.id == model.id && m.providerID == model.providerID)
+        let Some(model_info) = self.data.models.iter().find(|m| m.id == model.id && m.provider_id == model.provider_id)
             else { return div().into_any_element(); };
         let base = model.clone();
         v_flex().gap_1().border_1().border_color(cx.theme().border).p_2()
