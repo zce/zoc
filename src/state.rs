@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{collections::{HashMap, HashSet, VecDeque}, path::PathBuf};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum InboxGroup {
     Attention,
     Unread,
@@ -202,7 +202,6 @@ impl AppState {
         let msg = self.message(session, message);
         if !msg["content"].is_array() { msg["content"] = json!([]); }
         let parts = msg["content"].as_array_mut().expect("initialized array");
-        if ordinal > 10_000 { return msg; }
         while parts.len() <= ordinal { parts.push(json!({"type":"unknown"})); }
         if parts[ordinal]["type"] != kind && parts[ordinal]["type"] == "unknown" {
             parts[ordinal] = json!({"type":kind,"text":""});
