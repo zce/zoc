@@ -1,0 +1,123 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write # Temporary for first Cargo.lock + rustfmt bootstrap on same-repo PR.
+
+concurrency:
+  group: zoc-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux x86_64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang cmake pkg-config \
+            libfontconfig-dev libfreetype-dev libwayland-dev wayland-protocols \
+            libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev libxcb-render0-dev \
+            libssl-dev libzstd-dev libvulkan-dev libdbus-1-dev \
+            vulkan-validationlayers libvulkan1
+      - name: Rust toolchain
+        run: |
+          rustup update stable
+          rustup default stable
+          rustc --version
+          cargo --version
+          cargo clippy --version
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git
+            target
+          key: zoc-cargo-v1-${{ runner.os }}-${{ hashFiles('Cargo.toml', 'Cargo.lock') }}
+          restore-keys: |
+            zoc-cargo-v1-${{ runner.os }}-
+      - name: Bootstrap dependency lockfile
+        run: cargo generate-lockfile
+      - name: Format
+        run: |
+          cargo fmt --all
+          cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Unit and integration tests
+        run: cargo test
+      - name: Compile release
+        run: cargo build --release
+      - name: Startup smoke validation
+        run: |
+          ./target/release/zoc --check
+          file target/release/zoc
+      - name: Package Linux executable
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp target/release/zoc dist/zoc
+          strip dist/zoc
+          chmod +x dist/zoc
+          ldd dist/zoc | tee dist/DEPENDENCIES.txt
+          if grep -q 'not found' dist/DEPENDENCIES.txt; then exit 1; fi
+          cat > dist/README.txt <<'EOF'
+          ZOC 0.1.0 (prototype) — Linux x86_64
+          Requires a GNOME Wayland/X11 session with a working Vulkan driver.
+          May need system libraries listed in DEPENDENCIES.txt.
+
+          1. Place zoc anywhere convenient.
+          2. chmod +x zoc
+          3. ./zoc
+
+          ZOC connects to an existing OpenCode Service. It does not launch one.
+          It reads the optional $XDG_STATE_HOME/opencode/service.json registration.
+          Use the Connection form to override the URL and password.
+          EOF
+          (cd dist && sha256sum zoc > SHA256SUMS)
+          du -h dist/zoc
+      - name: Publish initial Cargo.lock and source formatting to PR
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.lock src
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: pin Cargo.lock and apply rustfmt"
+            git push origin HEAD:refs/heads/${{ github.head_ref }}
+          fi
+      - name: Upload PR prototype
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: zoc-linux-x86_64-pr${{ github.event.pull_request.number }}
+          path: dist/
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload main prototype
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: zoc-linux-x86_64-main
+          path: dist/
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 21
