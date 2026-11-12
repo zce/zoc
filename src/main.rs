@@ -566,7 +566,7 @@ impl Zoc {
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.sidebar_width = (this.sidebar_width + 30.).min(520.);
                             cx.notify();
-                        }))))
+                        })))))
             .into_any_element()
     }
 
