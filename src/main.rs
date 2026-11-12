@@ -612,7 +612,7 @@ impl Zoc {
                 .label(label)
                 .on_click(cx.listener(move |this, _, _, cx| this.switch_project(id.clone(), cx)))
         })).child(div().text_xs().text_color(muted)
-            .child(self.data.connection.as_ref().map(|c| c.url.as_str()).unwrap_or("Disconnected")))
+            .child(self.data.connection.as_ref().map(|c| c.url.clone()).unwrap_or_else(|| "Disconnected".into())))
             .into_any_element()
     }
 
