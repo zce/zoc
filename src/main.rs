@@ -228,7 +228,7 @@ impl Zoc {
                 if let Some(id) = selected { self.switch_project(id, cx); }
             }
             Event::Sessions { project, archived, items } => {
-                if self.data.current_project.as_deref() != Some(&project) { return; }
+                if self.data.current_project.as_deref() != Some(project.as_str()) { return; }
                 if self.data.archived != archived { return; }
                 self.data.sessions = items;
                 let target = self.data.current_session.as_ref()
@@ -247,7 +247,7 @@ impl Zoc {
                 }
             }
             Event::Metadata { directory, models, agents } => {
-                if self.data.project_directory() != Some(&directory) { return; }
+                if self.data.project_directory() != Some(directory.as_str()) { return; }
                 self.data.models = models.into_iter().filter(|m| m.enabled).collect();
                 self.data.agents = agents;
                 if self.data.selected_model.is_none() {
@@ -895,21 +895,25 @@ impl Zoc {
 
 impl Render for Zoc {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
+        let background = cx.theme().background;
+        let foreground = cx.theme().foreground;
+        let border = cx.theme().border;
+        let muted = cx.theme().muted_foreground;
+        let destructive = cx.theme().danger;
         let status = if !self.data.connected { "Disconnected" }
             else if !self.data.stream_connected { "Connected · stream reconnecting" }
             else { "Connected" };
         v_flex().id("zoc").size_full()
-            .bg(theme.background).text_color(theme.foreground)
+            .bg(background).text_color(foreground)
             .on_action(cx.listener(Self::on_new))
             .on_action(cx.listener(Self::on_send))
             .on_action(cx.listener(Self::on_focus_composer))
             .on_action(cx.listener(Self::on_focus_search))
             .on_action(cx.listener(Self::on_toggle_preview))
             .child(h_flex().h(px(46.)).px_4().gap_3().items_center()
-                .border_b_1().border_color(theme.border)
+                .border_b_1().border_color(border)
                 .child(div().font_bold().child("ZOC"))
-                .child(div().text_xs().text_color(theme.muted_foreground).child(status))
+                .child(div().text_xs().text_color(muted).child(status))
                 .child(div().flex_1())
                 .child(self.render_projects(cx))
                 .child(Button::new("connection-settings").small().ghost().label("Connection")
@@ -918,7 +922,7 @@ impl Render for Zoc {
                     }))))
             .when(self.show_connection, |view| view.child(self.render_connection(cx)))
             .when_some(self.data.error.as_ref(), |view, error| view.child(
-                h_flex().p_2().gap_3().bg(theme.destructive.opacity(0.12))
+                h_flex().p_2().gap_3().bg(destructive.opacity(0.12))
                     .child(div().flex_1().text_sm().child(error.clone()))
                     .child(Button::new("dismiss-error").small().ghost().label("Dismiss")
                         .on_click(cx.listener(|this, _, _, cx| {
