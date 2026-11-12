@@ -172,12 +172,13 @@ impl AppState {
         self.current_session = Some(session.clone());
         self.prefs.last_session = Some(session.clone());
         self.epoch = self.epoch.wrapping_add(1);
-        if let Some(entry) = self.active_session() {
-            if let Some(idle) = entry.time.idle {
+        if let Some((idle, model, agent)) = self.active_session()
+            .map(|entry| (entry.time.idle, entry.model.clone(), entry.agent.clone())) {
+            if let Some(idle) = idle {
                 self.prefs.read.insert(session.clone(), idle);
             }
-            self.selected_model = entry.model.clone();
-            self.selected_agent = entry.agent.clone();
+            self.selected_model = model;
+            self.selected_agent = agent;
         }
         self.preview = None;
         self.show_changes = false;
