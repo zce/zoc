@@ -132,6 +132,7 @@ pub struct Agent {
 pub enum Command {
     Connect(Connection),
     ListSessions { project: String, archived: bool },
+    LoadMetadata { directory: String },
     LoadConversation { session: String, epoch: u64 },
     Create { directory: String },
     Rename { session: String, title: String },
@@ -354,6 +355,11 @@ impl ServiceClient {
 fn run_command(service: &ServiceClient, cmd: Command, events: &UiSender<Event>) -> anyhow::Result<()> {
     match cmd {
         Command::Connect(_) => unreachable!(),
+        Command::LoadMetadata { directory } => {
+            let models: Vec<Model> = service.location_data("/api/model", &directory)?;
+            let agents: Vec<Agent> = service.location_data("/api/agent", &directory)?;
+            emit(events, Event::Metadata { directory, models, agents });
+        }
         Command::ListSessions { project, archived } => {
             let items = service.sessions(&project, archived)?;
             emit(events, Event::Sessions { project, archived, items });
