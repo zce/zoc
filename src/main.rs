@@ -40,6 +40,7 @@ pub struct Zoc {
     composer: Entity<TextareaState>,
     server: Entity<InputState>,
     password: Entity<InputState>,
+    rename: Entity<InputState>,
     search: Entity<InputState>,
     form_json: Entity<TextareaState>,
     preview_view: Entity<TextViewState>,
@@ -49,6 +50,7 @@ pub struct Zoc {
     collapsed: HashSet<InboxGroup>,
     filter: String,
     show_connection: bool,
+    show_session_actions: bool,
     show_models: bool,
     show_agents: bool,
     show_variants: bool,
@@ -72,6 +74,7 @@ impl Zoc {
         if let Some(ref local) = local {
             password.update(cx, |state, cx| state.set_value(local.password.clone(), window, cx));
         }
+        let rename = cx.new(|cx| InputState::new(window, cx).placeholder("Session title"));
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search sessions"));
         let composer = cx.new(|cx| TextareaState::new(window, cx).auto_grow(2, 8)
             .placeholder("Ask OpenCode anything…"));
@@ -97,10 +100,11 @@ impl Zoc {
             }
         });
         let mut view = Self {
-            data, commands, composer, server, password, search, form_json,
+            data, commands, composer, server, password, rename, search, form_json,
             preview_view, scroller, rows: Rc::new(RefCell::new(Vec::new())),
             markdown: HashMap::new(), collapsed: HashSet::new(), filter: String::new(),
-            show_connection: local.is_none(), show_models: false, show_agents: false,
+            show_connection: local.is_none(), show_session_actions: false,
+            show_models: false, show_agents: false,
             show_variants: false, show_preview: false, show_reasoning: false,
             sidebar_width: 290., preview_width: 420.,
             _subscriptions: vec![subscription], _events_task: task,
@@ -157,11 +161,9 @@ impl Zoc {
 
     fn switch_session(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
         self.save_draft(cx);
-        self.data.select_session(id.clone());
+        self.open_selected(id.clone(), cx);
         let draft = self.data.prefs.drafts.get(&id).cloned().unwrap_or_default();
         self.composer.update(cx, |state, cx| state.set_value(draft, window, cx));
-        self.rebuild_rows(cx);
-        self.send_command(Command::LoadConversation { session: id, epoch: self.data.epoch });
         cx.notify();
     }
 
@@ -309,18 +311,29 @@ impl Zoc {
                 }
             }
             Event::Preview { path, content } => {
-                self.data.preview = Some((path, content.clone()));
+                let formatted = if path.ends_with(".md") || path.ends_with(".mdx") {
+                    content.clone()
+                } else {
+                    let language = path.rsplit('.').next().unwrap_or("text");
+                    format!("```{language}\n{content}\n```")
+                };
+                self.data.preview = Some((path, formatted.clone()));
                 self.show_preview = true;
-                self.preview_view.update(cx, |state, cx| state.set_text(&content, cx));
+                self.preview_view.update(cx, |state, cx| state.set_text(&formatted, cx));
             }
             Event::Changes { items, diffs } => {
                 self.data.changes = items;
                 self.data.diffs = diffs;
                 self.data.show_changes = true;
                 self.show_preview = true;
+                if let Some(file) = self.data.diffs.first()
+                    && let Some(path) = file["file"].as_str().map(str::to_owned) {
+                    self.open_diff(path, cx);
+                }
             }
             Event::Stream(raw) => {
                 if !self.data.connected { return; }
+                if raw["type"] == "server.connected" { self.data.stream_connected = true; }
                 let kind = raw["type"].as_str().unwrap_or("");
                 let change = self.data.apply_stream(&raw);
                 match change {
@@ -463,6 +476,18 @@ impl Zoc {
         self.send_command(Command::LoadPreview { directory, path });
     }
 
+    fn open_diff(&mut self, path: String, cx: &mut Context<Self>) {
+        let patch = self.data.diffs.iter()
+            .find(|item| item["file"].as_str() == Some(path.as_str()))
+            .and_then(|item| item["patch"].as_str())
+            .unwrap_or("Diff not available").to_owned();
+        let source = format!("```diff\n{patch}\n```");
+        self.data.preview = Some((path, source.clone()));
+        self.data.show_changes = true;
+        self.show_preview = true;
+        self.preview_view.update(cx, |state, cx| state.set_text(&source, cx));
+    }
+
     fn request_changes(&mut self) {
         let Some(directory) = self.data.session_directory().map(str::to_owned) else { return; };
         self.send_command(Command::LoadChanges { directory });
@@ -532,7 +557,7 @@ impl Zoc {
                             .when(selected, |r| r.bg(cx.theme().secondary))
                             .hover(|s| s.bg(cx.theme().secondary))
                             .cursor_pointer()
-                            .on_click(cx.listener(move |this, _, _, cx| this.open_selected(id.clone(), cx)))
+                            .on_click(cx.listener(move |this, _, window, cx| this.switch_session(id.clone(), window, cx)))
                             .child(h_flex().gap_2()
                                 .child(div().w_3().text_xs().text_color(muted).child(indicator))
                                 .child(v_flex().flex_1().min_w_0()
@@ -808,11 +833,11 @@ impl Zoc {
                     }))));
         if self.data.show_changes {
             for (index, file) in self.data.changes.iter().enumerate().take(100) {
-                let path = file["path"].as_str().unwrap_or("file").to_owned();
+                let path = file["file"].as_str().unwrap_or("file").to_owned();
                 panel = panel.child(Button::new(format!("change-{index}")).small().ghost()
                     .label(path.clone())
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.open_file(path.clone()); cx.notify();
+                        this.open_diff(path.clone(), cx); cx.notify();
                     })));
             }
         } else {
