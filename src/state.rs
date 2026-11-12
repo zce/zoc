@@ -148,7 +148,7 @@ impl AppState {
         }
         let viewed = self.prefs.read.get(&session.id).copied()
             .unwrap_or(session.time.viewed.unwrap_or(0));
-        if session.time.idle.is_some_and(|idle| idle > viewed) {
+        if session.time.idle.is_some_and(|idle| idle > viewed) || (session.outcome.as_deref() == Some("failed") && session.time.updated > viewed) {
             return InboxGroup::Unread;
         }
         InboxGroup::Recent
@@ -162,8 +162,8 @@ impl AppState {
                 || s.id.to_lowercase().contains(&filter.to_lowercase()))
             .cloned().collect();
         list.sort_by_key(|s| std::cmp::Reverse(if group == InboxGroup::Working {
-            s.time.busy.unwrap_or(s.time.updated)
-        } else { s.time.updated }));
+            s.time.busy.unwrap_or(s.time.created)
+        } else { s.time.updated.max(s.time.created) }));
         list
     }
 
@@ -229,8 +229,8 @@ impl AppState {
         if let Some(id) = event["id"].as_str() {
             if !self.seen_events.insert(id.to_string()) { return StreamChange::None; }
             self.event_fifo.push_back(id.to_string());
-            if self.event_fifo.len() > 4096 {
-                if let Some(old) = self.event_fifo.pop_front() { self.seen_events.remove(&old); }
+            if self.event_fifo.len() > 4096 && let Some(old) = self.event_fifo.pop_front() {
+                self.seen_events.remove(&old);
             }
         }
         let typ = event["type"].as_str().unwrap_or("");
@@ -310,11 +310,11 @@ impl AppState {
                 if let Some(s) = self.sessions.iter_mut().find(|s| s.id == session) {
                     s.time.busy = Some(data["started"].as_u64().unwrap_or(s.time.updated + 1));
                 }
-                StreamChange::Session(session.to_string())
+                StreamChange::Session
             }
             "session.execution.succeeded" | "session.execution.failed" | "session.execution.interrupted"
                 | "session.renamed" | "session.archived" | "session.unarchived" | "session.deleted" => {
-                StreamChange::Session(session.to_string())
+                StreamChange::Session
             }
             "session.text.started" | "session.reasoning.started" | "session.tool.input.started"
                 | "session.step.started" | "server.connected" => StreamChange::None,
@@ -344,7 +344,7 @@ pub enum StreamChange {
     None,
     Message(String),
     Requests,
-    Session(String),
+    Session,
 }
 
 #[cfg(test)]
