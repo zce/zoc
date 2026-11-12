@@ -11,7 +11,7 @@ use gpui_kit::component::{
     text::{TextView, TextViewState},
 };
 use gpui_kit::prelude::FluentBuilder as _;
-use gpui_kit::base::StyledExt as _;
+use gpui_kit::base::{StyledExt as _, Selectable as _};
 use gpui_kit::*;
 use serde_json::Value;
 use state::{AppState, InboxGroup, StreamChange};
@@ -918,7 +918,7 @@ impl Zoc {
                 .child(v_flex().min_w_0().flex_1()
                     .child(div().font_semibold().truncate().child(title))
                     .child(div().text_xs().text_color(muted).truncate()
-                        .child(current.map(|s| s.location.directory.as_str()).unwrap_or("Choose a project"))))
+                        .child(current.map(|s| s.location.directory.clone()).unwrap_or_else(|| "Choose a project".into()))))
                 .child(Button::new("reasoning").small().ghost()
                     .label(if reasoning_visible { "Hide thinking" } else { "Thinking" })
                     .on_click(cx.listener(|this, _, _, cx| {
