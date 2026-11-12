@@ -1,0 +1,26 @@
+[package]
+name = "zoc"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+description = "Lightweight native OpenCode client for Linux"
+license = "MIT"
+
+[dependencies]
+gpui-kit = { version = "=0.9.1", features = ["syntect"] }
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+smol = "2.0"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls-native-roots"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+
+[profile.dev.package]
+gpui-pre = { opt-level = 3 }
+gpui-component = { opt-level = 3 }
+gpui-kit = { opt-level = 3 }
