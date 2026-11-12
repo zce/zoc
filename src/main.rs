@@ -821,6 +821,36 @@ impl Zoc {
             .into_any_element()
     }
 
+    fn render_session_actions(&self, cx: &mut Context<Self>) -> AnyElement {
+        let Some(session) = self.data.active_session() else {
+            return div().into_any_element();
+        };
+        let rename_id = session.id.clone();
+        let archive_id = session.id.clone();
+        let archived = session.time.archived.is_some();
+        h_flex().gap_2().p_2().border_b_1().border_color(cx.theme().border)
+            .child(div().flex_1().child(Input::new(&self.rename)))
+            .child(Button::new("rename-session").small().primary().label("Rename")
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    let title = this.rename.read(cx).value().to_string();
+                    if !title.trim().is_empty() {
+                        this.send_command(Command::Rename { session: rename_id.clone(), title });
+                        this.show_session_actions = false;
+                    }
+                    cx.notify();
+                })))
+            .child(Button::new("archive-session").small().outline()
+                .label(if archived { "Unarchive" } else { "Archive" })
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.send_command(Command::Archive {
+                        session: archive_id.clone(), archived: !archived,
+                    });
+                    this.show_session_actions = false;
+                    cx.notify();
+                })))
+            .into_any_element()
+    }
+
     fn render_preview(&self, cx: &mut Context<Self>) -> AnyElement {
         let border = cx.theme().border;
         let mut panel = v_flex().w(px(self.preview_width)).h_full()
@@ -832,14 +862,21 @@ impl Zoc {
                         this.show_preview = false; cx.notify();
                     }))));
         if self.data.show_changes {
+            let mut files = v_flex().gap_1().p_2();
             for (index, file) in self.data.changes.iter().enumerate().take(100) {
                 let path = file["file"].as_str().unwrap_or("file").to_owned();
-                panel = panel.child(Button::new(format!("change-{index}")).small().ghost()
-                    .label(path.clone())
+                let label = format!("{}  +{} −{}", path, file["additions"], file["deletions"]);
+                files = files.child(Button::new(format!("change-{index}")).small().ghost()
+                    .label(label)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.open_diff(path.clone(), cx); cx.notify();
                     })));
             }
+            panel = panel.child(div().max_h(px(180.)).overflow_y_scrollbar().child(files))
+                .child(div().p_2().text_xs().child(self.data.preview.as_ref()
+                    .map(|(name, _)| name.clone()).unwrap_or_else(|| "Select a modified file".into())))
+                .child(div().flex_1().min_h_0().overflow_y_scrollbar().p_3()
+                    .child(TextView::new(&self.preview_view).selectable(true)));
         } else {
             panel = panel.child(div().px_3().py_2().text_xs().child(self.data.preview.as_ref()
                 .map(|(name, _)| name.clone()).unwrap_or_else(|| "No file selected".into())))
@@ -892,7 +929,20 @@ impl Zoc {
                 .child(Button::new("preview-toggle").small().ghost().label("Preview")
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.show_preview = !this.show_preview; cx.notify();
-                    }))))
+                    })))
+                .when(has_session, |bar| bar.child(
+                    Button::new("session-actions").small().ghost().label("···")
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.show_session_actions = !this.show_session_actions;
+                            let title = this.data.active_session()
+                                .and_then(|s| s.title.clone()).unwrap_or_default();
+                            this.rename.update(cx, |state, cx| state.set_value(title, window, cx));
+                            cx.notify();
+                        }))
+                )))
+            .when(self.show_session_actions && has_session, |view| {
+                view.child(self.render_session_actions(cx))
+            })
             .child(div().flex_1().min_h_0()
                 .when(has_session, |view| view.child(transcript))
                 .when(!has_session, |view| view.child(
@@ -972,6 +1022,7 @@ fn main() {
     }
     gpui_kit::application().with_assets(gpui_kit::assets::Assets).run(|cx| {
         gpui_kit::init(cx);
+        gpui_kit::component::Theme::change(gpui_kit::component::ThemeMode::Dark, None, cx);
         cx.bind_keys(vec![
             KeyBinding::new("ctrl-n", NewSession, None),
             KeyBinding::new("ctrl-enter", SendPrompt, None),
