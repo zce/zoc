@@ -458,12 +458,12 @@ impl ServiceClient {
             .data
             .permission_sync(&session_id)
             .await
-            .map_err(|error| anyhow::anyhow!(error.tui_message()))?;
+            .ok();
         self.store
             .data
             .form_sync(id, None)
             .await
-            .map_err(|error| anyhow::anyhow!(error.tui_message()))?;
+            .ok();
 
         Ok(conversation_snapshot(&self.store.data, id))
     }
