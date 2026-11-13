@@ -454,16 +454,8 @@ impl ServiceClient {
             .message_load_more(&session_id, LoadMore { all: true, cancel: None })
             .await
             .map_err(|error| anyhow::anyhow!(error.tui_message()))?;
-        self.store
-            .data
-            .permission_sync(&session_id)
-            .await
-            .ok();
-        self.store
-            .data
-            .form_sync(id, None)
-            .await
-            .ok();
+        let _ = self.store.data.permission_sync(&session_id).await;
+        let _ = self.store.data.form_sync(id, None).await;
 
         Ok(conversation_snapshot(&self.store.data, id))
     }
