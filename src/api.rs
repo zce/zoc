@@ -1,9 +1,22 @@
+use anyhow::{Context as _, ensure};
+use futures_util::StreamExt;
+use opencode_api::{
+    client::{Auth, Client},
+    error::Error as ApiError,
+    generated::*,
+    transport::{Reqwest, Transport},
+};
+use opencode_local::{
+    channel::Channels,
+    paths::Paths,
+    registration::Files,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use smol::channel::Sender as UiSender;
 use std::{
-    io::{BufRead, BufReader},
-    path::PathBuf,
+    future::Future,
+    net::IpAddr,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -12,6 +25,19 @@ use std::{
     thread,
     time::Duration,
 };
+use tokio::runtime::{Builder, Handle};
+
+pub use opencode_api::generated::{
+    AgentInfo as Agent,
+    ModelInfo as Model,
+    ModelRef,
+    Project,
+    SessionInfo as Session,
+};
+
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(25);
+const STREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Connection {
@@ -28,131 +54,33 @@ fn default_user() -> String {
     "opencode".to_string()
 }
 
+/// Read the service registration using OpenCode's own XDG and channel rules.
 pub fn discover() -> Option<Connection> {
-    let state_home = std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state"))
-        })?;
-    let path = state_home.join("opencode/service.json");
-    let registration: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
-    parse_registration(&registration)
-}
-
-fn parse_registration(registration: &Value) -> Option<Connection> {
-    let url = registration.get("url")?.as_str()?.to_string();
-    if url.trim().is_empty() {
+    let paths = Paths::from_env().ok()?;
+    let channel = Channels::from_env().channel;
+    let registration = Files::new(&paths, &channel).read()?;
+    if registration.url.trim().is_empty() {
         return None;
     }
     Some(Connection {
-        url,
+        url: registration.url,
         username: default_user(),
-        password: registration
-            .get("password")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .into(),
-        expected_pid: registration
-            .get("pid")
-            .and_then(Value::as_u64)
-            .and_then(|pid| u32::try_from(pid).ok()),
+        password: registration.password.unwrap_or_default(),
+        expected_pid: Some(registration.pid),
     })
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
-pub struct Project {
-    pub id: String,
-    pub canonical: String,
-    #[serde(default)]
-    pub name: Option<String>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize)]
-pub struct Location {
-    pub directory: String,
-}
-
-#[derive(Clone, Debug, Default, Deserialize)]
-pub struct Times {
-    pub created: u64,
-    pub updated: u64,
-    #[serde(default)]
-    pub busy: Option<u64>,
-    #[serde(default)]
-    pub idle: Option<u64>,
-    #[serde(default)]
-    pub viewed: Option<u64>,
-    #[serde(default)]
-    pub archived: Option<u64>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize)]
-pub struct Session {
-    pub id: String,
-    #[serde(rename = "projectID")]
-    pub project_id: String,
-    #[serde(default)]
-    #[serde(rename = "parentID")]
-    pub parent_id: Option<String>,
-    #[serde(default)]
-    pub title: Option<String>,
-    #[serde(default)]
-    pub location: Location,
-    #[serde(default)]
-    pub time: Times,
-    #[serde(default)]
-    pub outcome: Option<String>,
-    #[serde(default)]
-    pub agent: Option<String>,
-    #[serde(default)]
-    pub model: Option<ModelRef>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct ModelRef {
-    pub id: String,
-    #[serde(rename = "providerID")]
-    pub provider_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub variant: Option<String>,
-}
-
-impl ModelRef {
-    pub fn display(&self) -> String {
-        format!(
-            "{}/{}{}",
-            self.provider_id,
-            self.id,
-            self.variant
-                .as_ref()
-                .map(|v| format!("#{v}"))
-                .unwrap_or_default()
-        )
-    }
-}
-
-#[derive(Clone, Debug, Default, Deserialize)]
-pub struct Model {
-    pub id: String,
-    #[serde(rename = "providerID")]
-    pub provider_id: String,
-    pub name: String,
-    #[serde(default)]
-    pub variants: Vec<Variant>,
-    #[serde(default)]
-    pub enabled: bool,
-}
-
-#[derive(Clone, Debug, Default, Deserialize)]
-pub struct Variant {
-    pub id: String,
-}
-
-#[derive(Clone, Debug, Default, Deserialize)]
-pub struct Agent {
-    pub id: String,
-    #[serde(default)]
-    pub name: Option<String>,
+pub fn model_display(model: &ModelRef) -> String {
+    format!(
+        "{}/{}{}",
+        model.provider_id,
+        model.id,
+        model
+            .variant
+            .as_ref()
+            .map(|variant| format!("#{variant}"))
+            .unwrap_or_default()
+    )
 }
 
 #[derive(Clone, Debug)]
@@ -266,22 +194,37 @@ pub fn spawn(events: UiSender<Event>) -> Sender<Command> {
     let (tx, rx) = mpsc::channel::<Command>();
     let sequence = Arc::new(AtomicU64::new(0));
     thread::spawn(move || {
+        let runtime = match Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+        {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                emit(&events, Event::Error(format!("Cannot start API runtime: {error}")));
+                return;
+            }
+        };
+
         let mut client: Option<ServiceClient> = None;
-        while let Ok(cmd) = rx.recv() {
-            if let Command::Connect(config) = cmd {
+        while let Ok(command) = rx.recv() {
+            if let Command::Connect(config) = command {
+                // Invalidate any previous event stream before attempting the new endpoint.
                 sequence.fetch_add(1, Ordering::AcqRel);
-                match ServiceClient::connect(config.clone()) {
+                match runtime.block_on(ServiceClient::connect(&config)) {
                     Ok(service) => {
-                        let info = service.get("/api/info", &[]).unwrap_or_default();
-                        match service.projects() {
-                            Ok(projects) => emit(
-                                &events,
-                                Event::Connected {
-                                    connection: config,
-                                    info,
-                                    projects,
-                                },
-                            ),
+                        let info = serde_json::to_value(&service.info).unwrap_or(Value::Null);
+                        match runtime.block_on(service.projects()) {
+                            Ok(projects) => {
+                                emit(
+                                    &events,
+                                    Event::Connected {
+                                        connection: config,
+                                        info,
+                                        projects,
+                                    },
+                                );
+                            }
                             Err(error) => {
                                 client = None;
                                 emit(
@@ -293,9 +236,10 @@ pub fn spawn(events: UiSender<Event>) -> Sender<Command> {
                         }
                         let generation = sequence.fetch_add(1, Ordering::AcqRel) + 1;
                         spawn_stream(
-                            service.clone(),
+                            service.client.clone(),
                             generation,
                             sequence.clone(),
+                            runtime.handle().clone(),
                             events.clone(),
                         );
                         client = Some(service);
@@ -307,6 +251,7 @@ pub fn spawn(events: UiSender<Event>) -> Sender<Command> {
                 }
                 continue;
             }
+
             let Some(service) = client.as_ref() else {
                 emit(
                     &events,
@@ -314,8 +259,7 @@ pub fn spawn(events: UiSender<Event>) -> Sender<Command> {
                 );
                 continue;
             };
-            let result = run_command(service, cmd, &events);
-            if let Err(error) = result {
+            if let Err(error) = runtime.block_on(run_command(service, command, &events)) {
                 emit(&events, Event::Error(error.to_string()));
             }
         }
@@ -330,143 +274,94 @@ fn emit(sender: &UiSender<Event>, event: Event) {
 
 #[derive(Clone)]
 struct ServiceClient {
-    endpoint: reqwest::Url,
-    user: String,
-    password: String,
-    client: reqwest::blocking::Client,
+    client: Client,
+    info: ServerInfo,
 }
 
 impl ServiceClient {
-    fn connect(config: Connection) -> anyhow::Result<Self> {
-        let endpoint = reqwest::Url::parse(&config.url)?;
-        anyhow::ensure!(
+    async fn connect(config: &Connection) -> anyhow::Result<Self> {
+        let endpoint = opencode_api::js::parse_url(&config.url)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        ensure!(
             endpoint.scheme() == "http" || endpoint.scheme() == "https",
             "HTTP(S) endpoint required"
         );
-        anyhow::ensure!(endpoint.host_str().is_some(), "Endpoint has no host");
         let host = endpoint.host_str().unwrap_or_default();
-        let local = matches!(host, "127.0.0.1" | "localhost" | "::1");
-        let mut builder = reqwest::blocking::Client::builder()
-            .connect_timeout(Duration::from_secs(6))
-            .timeout(Duration::from_secs(25));
+        ensure!(!host.is_empty(), "Endpoint has no host");
+        let local = host.eq_ignore_ascii_case("localhost")
+            || host
+                .parse::<IpAddr>()
+                .is_ok_and(|address| address.is_loopback());
+
+        // Keep loopback traffic out of a developer's HTTP proxy. Remote endpoints continue to
+        // follow the same proxy environment as the official OpenCode HTTP client.
+        let mut builder = opencode_api::transport::client_builder()
+            .connect_timeout(CONNECT_TIMEOUT);
         if local {
             builder = builder.no_proxy();
         }
-        let service = Self {
-            endpoint,
-            user: config.username,
-            password: config.password,
-            client: builder.build()?,
-        };
-        let info = service.get("/api/info", &[])?;
-        let version = info.get("version").and_then(Value::as_str).ok_or_else(|| {
-            anyhow::anyhow!("Missing OpenCode server version (expected /api/info V2)")
-        })?;
-        anyhow::ensure!(
-            !version.is_empty(),
+        let transport: Arc<dyn Transport> = Arc::new(Reqwest::new(builder.build()?));
+        let client = Client::with_transport(&config.url, transport)?.auth(Auth::Basic {
+            username: config.username.clone(),
+            password: config.password.clone(),
+        });
+        let info = tokio::time::timeout(CONNECT_TIMEOUT, client.server_info())
+            .await
+            .context("Timed out connecting to OpenCode service")??;
+        ensure!(
+            !info.version.trim().is_empty(),
             "OpenCode server returned an empty version"
         );
         if let Some(pid) = config.expected_pid {
-            let actual = info.get("pid").and_then(Value::as_u64).unwrap_or(0);
-            anyhow::ensure!(
-                actual == u64::from(pid),
-                "Service registration is stale (PID {pid}, server {actual})"
+            ensure!(
+                info.pid == i64::from(pid),
+                "Service registration is stale (PID {pid}, server {})",
+                info.pid
             );
         }
-        Ok(service)
+        Ok(Self { client, info })
     }
 
-    fn url(&self, path: &str) -> anyhow::Result<reqwest::Url> {
-        let mut url = self.endpoint.clone();
-        url.set_path(path);
-        url.set_query(None);
-        Ok(url)
-    }
-
-    fn request(
+    async fn call<T>(
         &self,
-        method: reqwest::Method,
-        path: &str,
-        query: &[(&str, &str)],
-        body: Option<Value>,
-    ) -> anyhow::Result<reqwest::blocking::Response> {
-        let mut url = self.url(path)?;
-        if !query.is_empty() {
-            url.query_pairs_mut().extend_pairs(query);
-        }
-        let mut request = self
-            .client
-            .request(method, url)
-            .basic_auth(&self.user, Some(&self.password))
-            .header("Accept", "application/json");
-        if let Some(body) = body {
-            request = request.json(&body);
-        }
-        let response = request.send()?;
-        let status = response.status();
-        if !status.is_success() {
-            let text = response.text().unwrap_or_default();
-            anyhow::bail!(
-                "OpenCode HTTP {}: {}",
-                status,
-                text.chars().take(420).collect::<String>()
-            );
-        }
-        Ok(response)
+        request: impl Future<Output = Result<T, ApiError>>,
+    ) -> anyhow::Result<T> {
+        tokio::time::timeout(REQUEST_TIMEOUT, request)
+            .await
+            .context("OpenCode request timed out")?
+            .map_err(|error| anyhow::anyhow!(error.tui_message()))
     }
 
-    fn get(&self, path: &str, query: &[(&str, &str)]) -> anyhow::Result<Value> {
-        Ok(self
-            .request(reqwest::Method::GET, path, query, None)?
-            .json()?)
+    async fn projects(&self) -> anyhow::Result<Vec<Project>> {
+        self.call(self.client.project_list(&ProjectListInput::default()))
+            .await
     }
 
-    fn mutate(&self, method: reqwest::Method, path: &str, body: Value) -> anyhow::Result<Value> {
-        let response = self.request(method, path, &[], Some(body))?;
-        if response.status() == reqwest::StatusCode::NO_CONTENT {
-            Ok(Value::Null)
-        } else {
-            let bytes = response.bytes()?;
-            if bytes.is_empty() {
-                Ok(Value::Null)
-            } else {
-                Ok(serde_json::from_slice(&bytes)?)
-            }
-        }
-    }
-
-    fn projects(&self) -> anyhow::Result<Vec<Project>> {
-        Ok(serde_json::from_value(self.get("/api/project", &[])?)?)
-    }
-
-    fn sessions(&self, project: &str, archived: bool) -> anyhow::Result<Vec<Session>> {
+    async fn sessions(
+        &self,
+        project: &str,
+        archived: bool,
+    ) -> anyhow::Result<Vec<Session>> {
         let mut result = Vec::new();
-        let mut cursor = None::<String>;
+        let mut cursor = None::<SessionsCursor>;
         for _ in 0..20 {
-            // The cursor encodes the original filter and order. Do not mix it with
-            // first-page parameters: V2 cursors represent a stable traversal.
-            let query = if let Some(ref cursor) = cursor {
-                vec![("cursor", cursor.as_str())]
-            } else {
-                vec![
-                    ("project", project),
-                    ("order", "desc"),
-                    ("parentID", "null"),
-                    ("limit", "50"),
-                    ("archived", if archived { "true" } else { "false" }),
-                ]
+            let input = SessionListInput {
+                limit: Some(50),
+                order: Some(SessionListInputOrder::Desc),
+                parent_id: Some(None),
+                archived: Some(archived),
+                project: Some(ProjectID(project.to_owned())),
+                cursor: cursor.clone(),
+                ..Default::default()
             };
-            let response = self.get("/api/session", &query)?;
-            let items: Vec<Session> = serde_json::from_value(response["data"].clone())?;
+            let response = self.call(self.client.session_list(&input)).await?;
             result.extend(
-                items
+                response
+                    .data
                     .into_iter()
-                    .filter(|s| s.project_id == project && s.parent_id.is_none()),
+                    .filter(|session| session.project_id.0 == project && session.parent_id.is_none()),
             );
-            cursor = response
-                .pointer("/cursor/next")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
+            cursor = response.cursor.next.flatten();
             if cursor.is_none() {
                 break;
             }
@@ -474,92 +369,128 @@ impl ServiceClient {
         Ok(result)
     }
 
-    fn conversation(&self, id: &str) -> anyhow::Result<(Vec<Value>, Vec<Value>, Vec<Value>)> {
+    async fn conversation(
+        &self,
+        id: &str,
+    ) -> anyhow::Result<(Vec<Value>, Vec<Value>, Vec<Value>)> {
+        let session_id = SessionID(id.to_owned());
         let mut messages = Vec::new();
         let mut cursor = None::<String>;
-        let path = format!("/api/session/{id}/message");
         for _ in 0..100 {
-            let mut query = vec![("limit", "200")];
-            if let Some(ref cursor) = cursor {
-                query.push(("cursor", cursor));
-            } else {
-                query.push(("order", "asc"));
-            }
-            let response = self.get(&path, &query)?;
-            if let Some(items) = response["data"].as_array() {
-                messages.extend(items.iter().cloned());
-            }
-            cursor = response
-                .pointer("/cursor/next")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
+            let input = MessageListInput {
+                session_id: session_id.clone(),
+                limit: Some(200),
+                order: Some(MessageListInputOrder::Asc),
+                cursor: cursor.clone(),
+                ..Default::default()
+            };
+            let response = self.call(self.client.message_list(&input)).await?;
+            messages.extend(
+                response
+                    .data
+                    .into_iter()
+                    .map(|message| serde_json::to_value(message).unwrap_or(Value::Null)),
+            );
+            cursor = response.cursor.next.flatten();
             if cursor.is_none() {
                 break;
             }
         }
+
         let permissions = self
-            .get(&format!("/api/session/{id}/permission"), &[])
-            .ok()
-            .and_then(|v| v["data"].as_array().cloned())
-            .unwrap_or_default();
+            .call(self.client.permission_list(&PermissionListInput {
+                session_id: session_id.clone(),
+            }))
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|permission| serde_json::to_value(permission).unwrap_or(Value::Null))
+            .collect();
         let forms = self
-            .get(&format!("/api/session/{id}/form"), &[])
-            .ok()
-            .and_then(|v| v["data"].as_array().cloned())
-            .unwrap_or_default();
+            .call(self.client.session_form_list(&SessionFormListInput {
+                session_id: id.to_owned(),
+            }))
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|form| serde_json::to_value(form).unwrap_or(Value::Null))
+            .collect();
         Ok((messages, permissions, forms))
     }
 
-    fn location_get(&self, path: &str, directory: &str) -> anyhow::Result<Value> {
-        self.get(path, &[("location[directory]", directory)])
-    }
-
-    fn location_data<T: serde::de::DeserializeOwned>(
+    async fn metadata(
         &self,
-        path: &str,
         directory: &str,
-    ) -> anyhow::Result<T> {
-        let result = self.location_get(path, directory)?;
-        Ok(serde_json::from_value(result["data"].clone())?)
+    ) -> anyhow::Result<(Vec<Model>, Vec<Agent>)> {
+        let location = Some(LocationQueryInput {
+            directory: Some(directory.to_owned()),
+        });
+        let models = self
+            .call(self.client.model_list(&ModelListInput {
+                location: location.clone(),
+                ..Default::default()
+            }))
+            .await?
+            .data;
+        let agents = self
+            .call(self.client.agent_list(&AgentListInput { location }))
+            .await?
+            .data;
+        Ok((models, agents))
     }
 
-    fn file(&self, directory: &str, path: &str) -> anyhow::Result<String> {
-        let mut url = self.url("/api/fs/read/")?;
-        {
-            let mut segments = url
-                .path_segments_mut()
-                .map_err(|_| anyhow::anyhow!("Invalid file URL"))?;
-            segments.pop_if_empty();
-            for segment in path.split('/').filter(|p| !p.is_empty()) {
-                if matches!(segment, ".." | ".") {
-                    anyhow::bail!("File path traversal is not supported");
-                }
-                segments.push(segment);
-            }
-        }
-        let response = self
-            .client
-            .get(url)
-            .basic_auth(&self.user, Some(&self.password))
-            .query(&[("location[directory]", directory)])
-            .send()?
-            .error_for_status()?;
-        let bytes = response.bytes()?;
-        anyhow::ensure!(bytes.len() < 2_000_000, "Preview exceeds 2 MB");
+    async fn file(&self, directory: &str, path: &str) -> anyhow::Result<String> {
+        let bytes = self
+            .call(self.client.file_read(&FileReadInput {
+                location: Some(LocationQueryInput {
+                    directory: Some(directory.to_owned()),
+                }),
+                path: path.to_owned(),
+            }))
+            .await?;
+        ensure!(bytes.len() < 2_000_000, "Preview exceeds 2 MB");
         Ok(String::from_utf8(bytes.to_vec())?)
+    }
+
+    async fn changes(&self, directory: &str) -> anyhow::Result<(Vec<Value>, Vec<Value>)> {
+        let location = Some(LocationQueryInput {
+            directory: Some(directory.to_owned()),
+        });
+        let status = self
+            .call(self.client.vcs_status(&VcsStatusInput {
+                location: location.clone(),
+            }))
+            .await?
+            .data
+            .into_iter()
+            .map(|item| serde_json::to_value(item).unwrap_or(Value::Null))
+            .collect();
+        let diffs = self
+            .call(self.client.vcs_diff(&VcsDiffInput {
+                location,
+                mode: VcsMode::Working,
+                base: None,
+                context: None,
+                untracked: None,
+            }))
+            .await?
+            .data
+            .into_iter()
+            .map(|item| serde_json::to_value(item).unwrap_or(Value::Null))
+            .collect();
+        Ok((status, diffs))
     }
 }
 
-fn run_command(
+async fn run_command(
     service: &ServiceClient,
-    cmd: Command,
+    command: Command,
     events: &UiSender<Event>,
 ) -> anyhow::Result<()> {
-    match cmd {
+    match command {
         Command::Connect(_) => unreachable!(),
         Command::LoadMetadata { directory } => {
-            let models: Vec<Model> = service.location_data("/api/model", &directory)?;
-            let agents: Vec<Agent> = service.location_data("/api/agent", &directory)?;
+            let (models, agents) = service.metadata(&directory).await?;
             emit(
                 events,
                 Event::Metadata {
@@ -570,7 +501,7 @@ fn run_command(
             );
         }
         Command::ListSessions { project, archived } => {
-            let items = service.sessions(&project, archived)?;
+            let items = service.sessions(&project, archived).await?;
             emit(
                 events,
                 Event::Sessions {
@@ -581,7 +512,7 @@ fn run_command(
             );
         }
         Command::LoadConversation { session, epoch } => {
-            let (messages, permissions, forms) = service.conversation(&session)?;
+            let (messages, permissions, forms) = service.conversation(&session).await?;
             emit(
                 events,
                 Event::Conversation {
@@ -594,28 +525,34 @@ fn run_command(
             );
         }
         Command::Create { directory } => {
-            let v = service.mutate(
-                reqwest::Method::POST,
-                "/api/session",
-                json!({"location":{"directory":directory}}),
-            )?;
-            let session: Session = serde_json::from_value(v["data"].clone())?;
+            let session = service
+                .call(service.client.session_create(&SessionCreateInput {
+                    location: Some(Some(LocationPublicRef {
+                        directory: AbsolutePath(directory),
+                    })),
+                    ..Default::default()
+                }))
+                .await?;
             emit(events, Event::Created(session));
         }
         Command::Rename { session, title } => {
-            service.mutate(
-                reqwest::Method::PATCH,
-                &format!("/api/session/{session}"),
-                json!({"title": title}),
-            )?;
+            service
+                .call(service.client.session_update(&SessionUpdateInput {
+                    session_id: SessionID(session.clone()),
+                    title: Some(title),
+                    ..Default::default()
+                }))
+                .await?;
             emit(events, Event::Updated { session });
         }
         Command::Archive { session, archived } => {
-            service.mutate(
-                reqwest::Method::PATCH,
-                &format!("/api/session/{session}"),
-                json!({"archived":archived}),
-            )?;
+            service
+                .call(service.client.session_update(&SessionUpdateInput {
+                    session_id: SessionID(session.clone()),
+                    archived: Some(archived),
+                    ..Default::default()
+                }))
+                .await?;
             emit(events, Event::Updated { session });
         }
         Command::Send {
@@ -624,33 +561,39 @@ fn run_command(
             model,
             agent,
         } => {
+            let session_id = SessionID(session.clone());
             if let Some(model) = model {
-                service.mutate(
-                    reqwest::Method::POST,
-                    &format!("/api/session/{session}/model"),
-                    json!({"model":model}),
-                )?;
+                service
+                    .call(service.client.session_switch_model(&SessionSwitchModelInput {
+                        session_id: session_id.clone(),
+                        model,
+                    }))
+                    .await?;
             }
             if let Some(agent) = agent {
-                service.mutate(
-                    reqwest::Method::POST,
-                    &format!("/api/session/{session}/agent"),
-                    json!({"agent":agent}),
-                )?;
+                service
+                    .call(service.client.session_switch_agent(&SessionSwitchAgentInput {
+                        session_id: session_id.clone(),
+                        agent: AgentID(agent),
+                    }))
+                    .await?;
             }
-            service.mutate(
-                reqwest::Method::POST,
-                &format!("/api/session/{session}/prompt"),
-                json!({"text":text}),
-            )?;
+            service
+                .call(service.client.session_prompt(&SessionPromptInput {
+                    session_id,
+                    text,
+                    ..Default::default()
+                }))
+                .await?;
             emit(events, Event::Sent { session });
         }
         Command::Interrupt { session } => {
-            service.mutate(
-                reqwest::Method::POST,
-                &format!("/api/session/{session}/interrupt"),
-                json!({}),
-            )?;
+            service
+                .call(service.client.session_interrupt(&SessionInterruptInput {
+                    session_id: SessionID(session.clone()),
+                    resume: None,
+                }))
+                .await?;
             emit(events, Event::Interrupted { session });
         }
         Command::ReplyPermission {
@@ -658,11 +601,14 @@ fn run_command(
             request,
             decision,
         } => {
-            service.mutate(
-                reqwest::Method::POST,
-                &format!("/api/session/{session}/permission/{request}/reply"),
-                json!({"decision":decision}),
-            )?;
+            service
+                .call(service.client.permission_reply(&PermissionReplyInput {
+                    session_id: SessionID(session),
+                    request_id: PermissionID(request.clone()),
+                    decision: PermissionReply::from(decision.as_str()),
+                    message: None,
+                }))
+                .await?;
             emit(events, Event::PermissionReplied { request });
         }
         Command::ReplyForm {
@@ -670,20 +616,22 @@ fn run_command(
             form,
             answer,
         } => {
-            service.mutate(
-                reqwest::Method::POST,
-                &format!("/api/session/{session}/form/{form}/reply"),
-                json!({"answer":answer}),
-            )?;
+            let answer: FormAnswer = serde_json::from_value(answer)?;
+            service
+                .call(service.client.session_form_reply(&SessionFormReplyInput {
+                    session_id: session,
+                    form_id: FormID(form.clone()),
+                    answer,
+                }))
+                .await?;
             emit(events, Event::FormReplied { form });
         }
         Command::LoadPreview { directory, path } => {
-            let content = service.file(&directory, &path)?;
+            let content = service.file(&directory, &path).await?;
             emit(events, Event::Preview { path, content });
         }
         Command::LoadChanges { directory } => {
-            let items: Vec<Value> = service.location_data("/api/vcs/status", &directory)?;
-            let diffs: Vec<Value> = service.location_data("/api/vcs/diff", &directory)?;
+            let (items, diffs) = service.changes(&directory).await?;
             emit(events, Event::Changes { items, diffs });
         }
     }
@@ -691,57 +639,45 @@ fn run_command(
 }
 
 fn spawn_stream(
-    service: ServiceClient,
+    client: Client,
     generation: u64,
     valid: Arc<AtomicU64>,
+    runtime: Handle,
     events: UiSender<Event>,
 ) {
-    thread::spawn(move || {
-        let endpoint = service.url("/api/event").expect("validated service URL");
-        let host = endpoint.host_str().unwrap_or_default();
-        let mut builder = reqwest::blocking::Client::builder()
-            .connect_timeout(Duration::from_secs(6))
-            .timeout(Duration::from_secs(90));
-        if matches!(host, "127.0.0.1" | "localhost" | "::1") {
-            builder = builder.no_proxy();
-        }
-        let client = match builder.build() {
-            Ok(client) => client,
-            Err(error) => {
-                emit(&events, Event::Error(error.to_string()));
-                return;
-            }
-        };
+    runtime.spawn(async move {
         let mut connected_once = false;
         while valid.load(Ordering::Acquire) == generation {
-            let result = client
-                .get(endpoint.clone())
-                .basic_auth(&service.user, Some(&service.password))
-                .header("Accept", "text/event-stream")
-                .send()
-                .and_then(reqwest::blocking::Response::error_for_status);
-            match result {
-                Ok(response) => {
+            match tokio::time::timeout(
+                STREAM_CONNECT_TIMEOUT,
+                client.event_subscribe(&EventSubscribeInput::default()),
+            )
+            .await
+            {
+                Ok(Ok(response)) => {
                     if connected_once {
                         emit(&events, Event::StreamReconnected);
                     }
                     connected_once = true;
-                    let mut reader = BufReader::new(response);
-                    let mut data = String::new();
-                    let mut line = String::new();
-                    while valid.load(Ordering::Acquire) == generation {
-                        line.clear();
-                        match reader.read_line(&mut line) {
-                            Ok(0) | Err(_) => break,
-                            Ok(_) => {
-                                let part = line.trim_end_matches(['\r', '\n']);
-                                if let Some(json) = part.strip_prefix("data:") {
-                                    data.push_str(json.trim_start());
-                                } else if part.is_empty() && !data.is_empty() {
-                                    if let Ok(event) = serde_json::from_str::<Value>(&data) {
-                                        emit(&events, Event::Stream(event));
+                    let mut stream = response.events(|| {});
+                    loop {
+                        tokio::select! {
+                            _ = tokio::time::sleep(Duration::from_millis(500)) => {
+                                if valid.load(Ordering::Acquire) != generation {
+                                    break;
+                                }
+                            }
+                            item = stream.next() => {
+                                match item {
+                                    Some(Ok(event)) => {
+                                        let raw = serde_json::to_value(event).unwrap_or(Value::Null);
+                                        emit(&events, Event::Stream(raw));
                                     }
-                                    data.clear();
+                                    Some(Err(error)) => {
+                                        emit(&events, Event::Error(error.to_string()));
+                                        break;
+                                    }
+                                    None => break,
                                 }
                             }
                         }
@@ -750,9 +686,18 @@ fn spawn_stream(
                         emit(&events, Event::StreamDisconnected);
                     }
                 }
-                Err(error) => {
+                Ok(Err(error)) => {
                     if valid.load(Ordering::Acquire) == generation {
-                        emit(&events, Event::Error(format!("Event stream: {error}")));
+                        emit(
+                            &events,
+                            Event::Error(format!("Event stream: {}", error.tui_message())),
+                        );
+                        emit(&events, Event::StreamDisconnected);
+                    }
+                }
+                Err(_) => {
+                    if valid.load(Ordering::Acquire) == generation {
+                        emit(&events, Event::Error("Event stream connection timed out".into()));
                         emit(&events, Event::StreamDisconnected);
                     }
                 }
@@ -760,7 +705,7 @@ fn spawn_stream(
             if valid.load(Ordering::Acquire) != generation {
                 break;
             }
-            thread::sleep(Duration::from_secs(3));
+            tokio::time::sleep(Duration::from_secs(3)).await;
         }
     });
 }
@@ -768,21 +713,18 @@ fn spawn_stream(
 #[cfg(test)]
 mod tests {
     use super::*;
-
     use std::{
-        io::{BufReader as TestReader, Write as _},
+        io::{BufRead as _, BufReader, Write as _},
         net::TcpListener,
     };
 
-    // Deterministic HTTP fixture for client contract tests. It is never shipped
-    // with the application and cannot respond to production UI actions.
     fn mock_api(responses: Vec<(&'static str, Value)>) -> (String, thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let worker = thread::spawn(move || {
             for (expected_path, body) in responses {
                 let (mut stream, _) = listener.accept().unwrap();
-                let mut reader = TestReader::new(stream.try_clone().unwrap());
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
                 let mut first = String::new();
                 reader.read_line(&mut first).unwrap();
                 let request_target = first.split_whitespace().nth(1).unwrap_or("");
@@ -809,104 +751,137 @@ mod tests {
         (url, worker)
     }
 
-    #[test]
-    fn service_registration_preserves_auth_and_pid() {
-        let registration = json!({
-            "url":"http://127.0.0.1:4982",
-            "password":"registered-secret",
-            "pid": 4821,
-            "version":"2.2.6"
-        });
-        let config = parse_registration(&registration).unwrap();
-        assert_eq!(config.url, "http://127.0.0.1:4982");
-        assert_eq!(config.username, "opencode");
-        assert_eq!(config.password, "registered-secret");
-        assert_eq!(config.expected_pid, Some(4821));
-        assert!(parse_registration(&json!({"password":"unused"})).is_none());
+    fn server_info(pid: u32) -> Value {
+        json!({
+            "pid": pid,
+            "version": "2.2.6",
+            "urls": [],
+            "paths": {"tmp": "/tmp"}
+        })
+    }
+
+    fn project(id: &str, canonical: &str, name: &str) -> Value {
+        json!({
+            "id": id,
+            "canonical": canonical,
+            "name": name,
+            "time": {"created": 1, "updated": 1, "active": 1},
+            "sandboxes": []
+        })
+    }
+
+    fn session(id: &str) -> Value {
+        json!({
+            "id": id,
+            "projectID": "prj_1",
+            "location": {"directory": "/work/one"},
+            "time": {"created": 1, "updated": 3},
+            "cost": 0,
+            "tokens": {
+                "input": 0,
+                "output": 0,
+                "reasoning": 0,
+                "cache": {"read": 0, "write": 0}
+            }
+        })
+    }
+
+    fn runtime() -> tokio::runtime::Runtime {
+        Builder::new_current_thread().enable_all().build().unwrap()
     }
 
     #[test]
-    fn local_service_connects_and_lists_real_project_ids() {
+    fn local_service_connects_and_lists_official_project_types() {
         let (url, worker) = mock_api(vec![
-            ("/api/info", json!({"pid":450,"version":"2.2.6"})),
+            ("/api/info", server_info(450)),
             (
                 "/api/project",
                 json!([
-                    {"id":"prj_alpha","canonical":"/work/alpha","name":"Alpha"},
-                    {"id":"prj_beta","canonical":"/work/beta","name":"Beta"}
+                    project("prj_alpha", "/work/alpha", "Alpha"),
+                    project("prj_beta", "/work/beta", "Beta")
                 ]),
             ),
         ]);
-        let client = ServiceClient::connect(Connection {
-            url,
-            username: "opencode".into(),
-            password: "secret".into(),
-            expected_pid: Some(450),
-        })
-        .unwrap();
-        let projects = client.projects().unwrap();
+        let rt = runtime();
+        let service = rt
+            .block_on(ServiceClient::connect(&Connection {
+                url,
+                username: "opencode".into(),
+                password: "secret".into(),
+                expected_pid: Some(450),
+            }))
+            .unwrap();
+        let projects = rt.block_on(service.projects()).unwrap();
         assert_eq!(projects.len(), 2);
-        assert_eq!(projects[1].id, "prj_beta");
-        assert_eq!(projects[1].canonical, "/work/beta");
+        assert_eq!(projects[1].id.as_str(), "prj_beta");
+        assert_eq!(projects[1].canonical.as_str(), "/work/beta");
         worker.join().unwrap();
     }
 
     #[test]
-    fn session_cursors_do_not_repeat_first_page_filters() {
-        let make_session = |id: &str| {
-            json!({
-                "id":id,"projectID":"prj_1","location":{"directory":"/work/one"},
-                "time":{"created":1,"updated":3}
-            })
-        };
+    fn official_session_cursor_is_only_sent_after_the_first_page() {
         let (url, worker) = mock_api(vec![
-            ("/api/info", json!({"pid":1,"version":"2.2.6"})),
+            ("/api/info", server_info(1)),
             (
-                "/api/session?project=prj_1&order=desc&parentID=null&limit=50&archived=false",
-                json!({"data":[make_session("ses_2")],"cursor":{"next":"opaque-next"}}),
+                "/api/session?limit=50&order=desc&parentID=null&archived=false&project=prj_1",
+                json!({"data":[session("ses_2")],"cursor":{"next":"opaque-next"}}),
             ),
             (
                 "/api/session?cursor=opaque-next",
-                json!({"data":[make_session("ses_1")],"cursor":{}}),
+                json!({"data":[session("ses_1")],"cursor":{}}),
             ),
         ]);
-        let client = ServiceClient::connect(Connection {
-            url,
-            username: "opencode".into(),
-            password: String::new(),
-            expected_pid: None,
-        })
-        .unwrap();
-        let sessions = client.sessions("prj_1", false).unwrap();
+        let rt = runtime();
+        let service = rt
+            .block_on(ServiceClient::connect(&Connection {
+                url,
+                username: "opencode".into(),
+                password: String::new(),
+                expected_pid: None,
+            }))
+            .unwrap();
+        let sessions = rt.block_on(service.sessions("prj_1", false)).unwrap();
         assert_eq!(
-            sessions.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            sessions.iter().map(|session| session.id.as_str()).collect::<Vec<_>>(),
             vec!["ses_2", "ses_1"]
         );
         worker.join().unwrap();
     }
 
     #[test]
-    fn model_reference_keeps_variant() {
+    fn official_model_reference_keeps_provider_and_variant() {
         let model = ModelRef {
-            provider_id: "openai".into(),
+            provider_id: ProviderID::from("openai"),
             id: "gpt-6".into(),
             variant: Some("high".into()),
         };
-        assert_eq!(model.display(), "openai/gpt-6#high");
-        assert_eq!(serde_json::to_value(model).unwrap()["variant"], "high");
+        assert_eq!(model_display(&model), "openai/gpt-6#high");
+        let encoded = serde_json::to_value(model).unwrap();
+        assert_eq!(encoded["providerID"], "openai");
+        assert_eq!(encoded["variant"], "high");
     }
 
     #[test]
-    fn understands_v2_project_identity() {
-        let value = json!({"id":"abc","canonical":"/workspace/repo","name":"repo"});
-        let project: Project = serde_json::from_value(value).unwrap();
-        assert_eq!(project.canonical, "/workspace/repo");
+    fn official_schema_preserves_unknown_transcript_members() {
+        let raw = json!({"id":"msg_future","type":"future-message","custom":true});
+        let message: SessionMessageInfo = serde_json::from_value(raw.clone()).unwrap();
+        assert!(matches!(message, SessionMessageInfo::Unknown(_)));
+        assert_eq!(serde_json::to_value(message).unwrap(), raw);
     }
 
     #[test]
-    fn preserves_busy_and_idle_timestamps() {
-        let v = json!({"created":1,"updated":2,"busy":10,"idle":9,"viewed":8});
-        let time: Times = serde_json::from_value(v).unwrap();
-        assert!(time.busy > time.idle);
+    fn official_project_and_timestamp_types_match_v2_wire_data() {
+        let project: Project = serde_json::from_value(project("prj_1", "/workspace/repo", "repo")).unwrap();
+        assert_eq!(project.canonical.as_str(), "/workspace/repo");
+
+        let time: SessionInfoTime = serde_json::from_value(json!({
+            "created": 1,
+            "updated": 2,
+            "busy": 10,
+            "idle": 9,
+            "viewed": 8
+        }))
+        .unwrap();
+        assert!(time.busy.unwrap() > time.idle.unwrap());
     }
 }
