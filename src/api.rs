@@ -1,5 +1,4 @@
 use anyhow::{Context as _, ensure};
-use futures_util::StreamExt;
 use opencode_api::{
     client::{Auth, Client},
     error::Error as ApiError,
@@ -11,6 +10,13 @@ use opencode_local::{
     paths::Paths,
     registration::Files,
 };
+use opencode_store::{
+    connection as store_connection,
+    inbox::Prompt as StorePrompt,
+    messages::LoadMore,
+    Data as StoreData,
+    Options as StoreOptions,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use smol::channel::Sender as UiSender;
@@ -19,13 +25,14 @@ use std::{
     net::IpAddr,
     sync::{
         Arc,
+        Mutex,
         atomic::{AtomicU64, Ordering},
         mpsc::{self, Sender},
     },
     thread,
     time::Duration,
 };
-use tokio::runtime::{Builder, Handle};
+use tokio::{runtime::{Builder, Handle}, task::JoinHandle};
 
 pub use opencode_api::generated::{
     AgentInfo as Agent,
@@ -37,7 +44,6 @@ pub use opencode_api::generated::{
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(25);
-const STREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Connection {
@@ -143,10 +149,14 @@ pub enum Event {
         info: Value,
         projects: Vec<Project>,
     },
+    Projects {
+        projects: Vec<Project>,
+    },
     Sessions {
         project: String,
         archived: bool,
         items: Vec<Session>,
+        running: Vec<String>,
     },
     Conversation {
         session: String,
@@ -170,12 +180,6 @@ pub enum Event {
     Interrupted {
         session: String,
     },
-    PermissionReplied {
-        request: String,
-    },
-    FormReplied {
-        form: String,
-    },
     Preview {
         path: String,
         content: String,
@@ -184,7 +188,6 @@ pub enum Event {
         items: Vec<Value>,
         diffs: Vec<Value>,
     },
-    Stream(Value),
     StreamDisconnected,
     StreamReconnected,
     Error(String),
@@ -235,8 +238,8 @@ pub fn spawn(events: UiSender<Event>) -> Sender<Command> {
                             }
                         }
                         let generation = sequence.fetch_add(1, Ordering::AcqRel) + 1;
-                        spawn_stream(
-                            service.client.clone(),
+                        spawn_store_watch(
+                            service.store.clone(),
                             generation,
                             sequence.clone(),
                             runtime.handle().clone(),
