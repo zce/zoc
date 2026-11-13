@@ -34,3 +34,31 @@ fn official_v2_session_list_understands_cursor_response() {
     assert!(response.cursor.next.is_some());
     let _input = SessionListInput::default();
 }
+
+#[test]
+fn official_generated_transport_builds_real_session_and_event_requests() {
+    use opencode_api::client::{Auth, Client};
+    use opencode_api::generated::{EventSubscribeInput, ProjectID};
+
+    let client = Client::new("http://127.0.0.1:4980")
+        .unwrap()
+        .auth(Auth::password("secret"));
+    let list = SessionListInput {
+        project: Some(ProjectID::from("prj_123")),
+        parent_id: Some(None),
+        limit: Some(50),
+        ..Default::default()
+    };
+    let request = client.prepare(Client::session_list_call(&list).unwrap()).unwrap();
+    assert_eq!(request.method, "GET");
+    assert_eq!(request.url.path(), "/api/session");
+    assert!(request.url.query().unwrap_or("").contains("project=prj_123"));
+    assert!(request.url.query().unwrap_or("").contains("parentID=null"));
+    assert!(request.headers.iter().any(|(key, value)|
+        key == "authorization" && value.starts_with("Basic ")
+    ));
+
+    let event = client.prepare(Client::event_subscribe_call(&EventSubscribeInput::default()).unwrap()).unwrap();
+    assert_eq!(event.url.path(), "/api/event");
+    assert_eq!(event.method, "GET");
+}
