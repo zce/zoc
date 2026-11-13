@@ -170,7 +170,7 @@ pub enum Event {
         models: Vec<Model>,
         agents: Vec<Agent>,
     },
-    Created(Session),
+    Created(Box<Session>),
     Updated {
         session: String,
     },
@@ -597,7 +597,7 @@ async fn run_command(
             let session = task
                 .await
                 .map_err(|error| anyhow::anyhow!(error.tui_message()))?;
-            emit(events, Event::Created(session));
+            emit(events, Event::Created(Box::new(session)));
         }
         Command::Rename { session, title } => {
             let id = SessionID(session.clone());
