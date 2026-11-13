@@ -13,6 +13,7 @@ ZOC ships through **small, inspectable GitHub Actions Artifacts**, not Releases.
 
 - Keep each stage narrow: fix evidenced defects in the chosen workflow; postpone unrelated polish.
 - Keep upstream UI/product behavior authoritative; when an upstream feature is not implemented yet, mark it **partial** rather than inventing a substitute.
+- Use the pinned upstream Rust crates for API types/transport, service registration, event lifecycle, session/transcript state and approval/form behavior. ZOC-owned state should remain presentation-only.
 - An Artifact is runnable only after native startup and package checks. CI's `--check` option alone only proves the binary loads.
 - No automatic GitHub release, tag or merge; user feedback may influence the **next** stage, not retrospectively redefine a verified result.
 - Every stage keeps a short manual-test script and actual CI link/commit. Local Fedora GNOME/Wayland observations are explicitly user-side and must not be misrepresented as performed by Linux CI.
