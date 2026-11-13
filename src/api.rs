@@ -12,7 +12,7 @@ use opencode_local::{
     registration::Files,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use smol::channel::Sender as UiSender;
 use std::{
     future::Future,
@@ -659,7 +659,8 @@ fn spawn_stream(
                         emit(&events, Event::StreamReconnected);
                     }
                     connected_once = true;
-                    let mut stream = response.events(|| {});
+                    let stream = response.events(|| {});
+                    futures_util::pin_mut!(stream);
                     loop {
                         tokio::select! {
                             _ = tokio::time::sleep(Duration::from_millis(500)) => {
@@ -713,6 +714,7 @@ fn spawn_stream(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::{
         io::{BufRead as _, BufReader, Write as _},
         net::TcpListener,
