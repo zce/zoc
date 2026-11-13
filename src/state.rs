@@ -241,6 +241,29 @@ impl AppState {
         self.messages.insert(session.to_string(), messages);
     }
 
+    pub fn update_messages(&mut self, session: &str, updates: Vec<Value>) -> bool {
+        let Some(messages) = self.messages.get(session) else {
+            return false;
+        };
+        let Some(indices) = updates
+            .iter()
+            .map(|update| {
+                let id = update.get("id")?.as_str()?;
+                messages
+                    .iter()
+                    .position(|message| message.get("id").and_then(Value::as_str) == Some(id))
+            })
+            .collect::<Option<Vec<_>>>()
+        else {
+            return false;
+        };
+        let messages = self.messages.get_mut(session).expect("messages were checked above");
+        for (index, update) in indices.into_iter().zip(updates) {
+            messages[index] = update;
+        }
+        true
+    }
+
     pub fn active_messages(&self) -> &[Value] {
         self.current_session
             .as_ref()
