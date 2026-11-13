@@ -640,30 +640,48 @@ async fn run_command(
             agent,
         } => {
             let session_id = SessionID(session.clone());
-            if let Some(model) = model {
-                service
-                    .call(service.client.session_switch_model(&SessionSwitchModelInput {
-                        session_id: session_id.clone(),
-                        model,
-                    }))
-                    .await?;
-            }
-            if let Some(agent) = agent {
-                service
-                    .call(service.client.session_switch_agent(&SessionSwitchAgentInput {
-                        session_id: session_id.clone(),
-                        agent: AgentID(agent),
-                    }))
-                    .await?;
-            }
+            let client = service.client.clone();
+            let prepare = (model.is_some() || agent.is_some()).then(|| {
+                Box::new(move || -> opencode_store::inbox::Gate {
+                    Box::pin(async move {
+                        if let Some(agent) = agent {
+                            client
+                                .session_switch_agent(&SessionSwitchAgentInput {
+                                    session_id: session_id.clone(),
+                                    agent: AgentID(agent),
+                                })
+                                .await
+                                .map_err(opencode_store::Error::new)?;
+                        }
+                        if let Some(model) = model {
+                            client
+                                .session_switch_model(&SessionSwitchModelInput {
+                                    session_id,
+                                    model,
+                                })
+                                .await
+                                .map_err(|error| {
+                                    opencode_store::Error::new(opencode_api::error::Error::Transport(
+                                        format!("Failed to switch model: {error}"),
+                                    ))
+                                })?;
+                        }
+                        Ok(())
+                    })
+                }) as Box<dyn FnOnce() -> opencode_store::inbox::Gate + Send>
+            });
             service
                 .store
                 .data
-                .prompt(StorePrompt::from(SessionPromptInput {
-                    session_id,
-                    text,
-                    ..Default::default()
-                }))
+                .prompt(StorePrompt {
+                    input: SessionPromptInput {
+                        session_id,
+                        text,
+                        ..Default::default()
+                    },
+                    gate: None,
+                    prepare,
+                })
                 .await
                 .map_err(|error| anyhow::anyhow!(error.tui_message()))?;
             emit(events, Event::Sent { session });
