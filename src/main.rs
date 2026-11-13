@@ -16,7 +16,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use serde_json::Value;
-use state::{AppState, InboxGroup, StreamChange};
+use state::{AppState, InboxGroup};
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
@@ -323,10 +323,21 @@ impl Zoc {
                     self.switch_project(id, cx);
                 }
             }
+            Event::Projects { projects } => {
+                self.data.projects = projects;
+                if self.data.current_project.as_ref().is_some_and(|current| {
+                    !self.data.projects.iter().any(|project| project.id.as_str() == current)
+                }) {
+                    if let Some(id) = self.data.projects.first().map(|project| project.id.0.clone()) {
+                        self.switch_project(id, cx);
+                    }
+                }
+            }
             Event::Sessions {
                 project,
                 archived,
                 items,
+                running,
             } => {
                 if self.data.current_project.as_deref() != Some(project.as_str()) {
                     return;
@@ -335,6 +346,7 @@ impl Zoc {
                     return;
                 }
                 self.data.sessions = items;
+                self.data.running = running.into_iter().collect();
                 let target = self
                     .data
                     .current_session
@@ -442,16 +454,6 @@ impl Zoc {
                 });
                 self.refresh_sessions();
             }
-            Event::PermissionReplied { request } => {
-                for permissions in self.data.permissions.values_mut() {
-                    permissions.retain(|p| p["id"] != request);
-                }
-            }
-            Event::FormReplied { form } => {
-                for forms in self.data.forms.values_mut() {
-                    forms.retain(|f| f["id"] != form);
-                }
-            }
             Event::Preview { path, content } => {
                 let formatted = if path.ends_with(".md") || path.ends_with(".mdx") {
                     content.clone()
@@ -473,41 +475,6 @@ impl Zoc {
                     && let Some(path) = file["file"].as_str().map(str::to_owned)
                 {
                     self.open_diff(path, cx);
-                }
-            }
-            Event::Stream(raw) => {
-                if !self.data.connected {
-                    return;
-                }
-                if raw["type"] == "server.connected" {
-                    self.data.stream_connected = true;
-                }
-                let kind = raw["type"].as_str().unwrap_or("");
-                let change = self.data.apply_stream(&raw);
-                match change {
-                    StreamChange::Message(session) => {
-                        if self.data.current_session.as_deref() == Some(&session) {
-                            self.sync_rows(cx);
-                        }
-                    }
-                    StreamChange::Session => {
-                        if matches!(
-                            kind,
-                            "session.execution.succeeded"
-                                | "session.execution.failed"
-                                | "session.execution.interrupted"
-                                | "session.deleted"
-                        ) {
-                            self.refresh_sessions();
-                            if let Some(session) = self.data.current_session.clone() {
-                                self.send_command(Command::LoadConversation {
-                                    session,
-                                    epoch: self.data.epoch,
-                                });
-                            }
-                        }
-                    }
-                    _ => {}
                 }
             }
             Event::StreamDisconnected => {
