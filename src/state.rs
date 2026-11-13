@@ -156,7 +156,7 @@ impl AppState {
             .is_some_and(|items| !items.is_empty())
             || self
                 .forms
-                .get(&session.id)
+                .get(&session.id.0)
                 .is_some_and(|items| !items.is_empty())
         {
             return InboxGroup::Attention;
@@ -171,7 +171,7 @@ impl AppState {
         let viewed = self
             .prefs
             .read
-            .get(&session.id)
+            .get(&session.id.0)
             .copied()
             .unwrap_or(session.time.viewed.unwrap_or(0.0));
         if session.time.idle.is_some_and(|idle| idle > viewed)
