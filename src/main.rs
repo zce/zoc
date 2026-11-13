@@ -1,7 +1,7 @@
 mod api;
 mod state;
 
-use api::{Command, Event, ModelRef};
+use api::{Command, Event, ModelRef, model_display};
 use gpui_kit::base::{Selectable as _, StyledExt as _};
 use gpui_kit::component::{
     ActiveTheme, Sizable as _,
@@ -339,7 +339,7 @@ impl Zoc {
                     .data
                     .current_session
                     .as_ref()
-                    .filter(|id| self.data.sessions.iter().any(|s| &s.id == *id))
+                    .filter(|id| self.data.sessions.iter().any(|s| s.id.as_str() == id.as_str()))
                     .cloned()
                     .or_else(|| {
                         self.data
@@ -379,7 +379,7 @@ impl Zoc {
                 self.data.agents = agents;
                 if self.data.selected_model.is_none() {
                     self.data.selected_model = self.data.models.first().map(|model| ModelRef {
-                        id: model.id.clone(),
+                        id: model.model_id.clone(),
                         provider_id: model.provider_id.clone(),
                         variant: None,
                     });
@@ -406,7 +406,7 @@ impl Zoc {
                 self.rebuild_rows(cx);
             }
             Event::Created(session) => {
-                let id = session.id.clone();
+                let id = session.id.0.clone();
                 self.data.sessions.insert(0, session);
                 self.data.select_session(id.clone());
                 self.rebuild_rows(cx);
@@ -811,7 +811,7 @@ impl Zoc {
                                 .title
                                 .clone()
                                 .unwrap_or_else(|| "Untitled session".into());
-                            let directory = session.location.directory.clone();
+                            let directory = session.location.directory.0.clone();
                             let indicator = match self.data.classify(&session) {
                                 InboxGroup::Working => "●",
                                 InboxGroup::Attention => "!",
@@ -965,11 +965,12 @@ impl Zoc {
             .gap_2()
             .items_center()
             .children(self.data.projects.iter().map(|project| {
-                let id = project.id.clone();
+                let id = project.id.0.clone();
                 let active = self.data.current_project.as_ref() == Some(&id);
                 let label = project.name.clone().unwrap_or_else(|| {
                     project
                         .canonical
+                        .as_str()
                         .rsplit('/')
                         .next()
                         .unwrap_or("Project")
@@ -1228,12 +1229,12 @@ impl Zoc {
         for model in self.data.models.iter().take(75) {
             let model_ref = ModelRef {
                 provider_id: model.provider_id.clone(),
-                id: model.id.clone(),
+                id: model.model_id.clone(),
                 variant: None,
             };
             let label = format!("{} · {}", model.provider_id, model.name);
             view = view.child(
-                Button::new(format!("model-{}", model_ref.display()))
+                Button::new(format!("model-{}", model_display(&model_ref)))
                     .ghost()
                     .small()
                     .label(label)
@@ -1254,11 +1255,11 @@ impl Zoc {
             .rounded_md()
             .bg(cx.theme().popover)
             .children(self.data.agents.iter().map(|agent| {
-                let id = agent.id.clone();
+                let id = agent.id.0.clone();
                 Button::new(format!("agent-{id}"))
                     .small()
                     .ghost()
-                    .label(agent.name.clone().unwrap_or_else(|| id.clone()))
+                    .label(agent.name.clone())
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.data.selected_agent = Some(id.clone());
                         this.show_agents = false;
@@ -1276,7 +1277,7 @@ impl Zoc {
             .data
             .models
             .iter()
-            .find(|m| m.id == model.id && m.provider_id == model.provider_id)
+            .find(|m| m.model_id == model.id && m.provider_id == model.provider_id)
         else {
             return div().into_any_element();
         };
@@ -1332,7 +1333,7 @@ impl Zoc {
                                 self.data
                                     .selected_model
                                     .as_ref()
-                                    .map(ModelRef::display)
+                                    .map(model_display)
                                     .unwrap_or_else(|| "Model".into()),
                             )
                             .on_click(cx.listener(|this, _, _, cx| {
@@ -1394,8 +1395,8 @@ impl Zoc {
         let Some(session) = self.data.active_session() else {
             return div().into_any_element();
         };
-        let rename_id = session.id.clone();
-        let archive_id = session.id.clone();
+        let rename_id = session.id.0.clone();
+        let archive_id = session.id.0.clone();
         let archived = session.time.archived.is_some();
         h_flex()
             .gap_2()
@@ -1594,7 +1595,7 @@ impl Zoc {
                             .child(
                                 div().text_xs().text_color(muted).truncate().child(
                                     current
-                                        .map(|s| s.location.directory.clone())
+                                        .map(|s| s.location.directory.0.clone())
                                         .unwrap_or_else(|| "Choose a project".into()),
                                 ),
                             ),
