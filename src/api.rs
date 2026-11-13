@@ -165,6 +165,17 @@ pub enum Event {
         permissions: Vec<Value>,
         forms: Vec<Value>,
     },
+    MessageUpdates {
+        session: String,
+        epoch: u64,
+        items: Vec<Value>,
+    },
+    Approvals {
+        session: String,
+        epoch: u64,
+        permissions: Vec<Value>,
+        forms: Vec<Value>,
+    },
     Metadata {
         directory: String,
         models: Vec<Model>,
@@ -770,6 +781,25 @@ fn conversation_snapshot(
     })
 }
 
+fn approvals_snapshot(data: &StoreData, session: &str) -> (Vec<Value>, Vec<Value>) {
+    let id = SessionID(session.to_owned());
+    data.read(|state| {
+        let permissions = state
+            .permissions(&id)
+            .unwrap_or_default()
+            .iter()
+            .map(|permission| serde_json::to_value(permission).unwrap_or(Value::Null))
+            .collect();
+        let forms = state
+            .forms(session, None)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|form| serde_json::to_value(&form.info).unwrap_or(Value::Null))
+            .collect();
+        (permissions, forms)
+    })
+}
+
 fn sessions_snapshot(
     data: &StoreData,
     project: &str,
@@ -857,13 +887,7 @@ fn spawn_store_watch(
 
                     if let Some((session, epoch)) = context.session {
                         let id = SessionID(session.clone());
-                        if changes.any_message(&id)
-                            || changes.permissions(&id)
-                            || changes.forms(&session)
-                            || changes.session(&id)
-                            || changes.status(&id)
-                            || changes.pending(&id)
-                        {
+                        if changes.messages(&id) {
                             let (messages, permissions, forms) =
                                 conversation_snapshot(&store.data, &session);
                             emit(&events, Event::Conversation {
@@ -873,6 +897,34 @@ fn spawn_store_watch(
                                 permissions,
                                 forms,
                             });
+                        } else {
+                            if let Some(changed) = changes.message.get(&id) {
+                                let items = store.data.read(|state| {
+                                    changed
+                                        .iter()
+                                        .filter_map(|message| {
+                                            state.message(&id, message.as_str())
+                                                .map(|item| serde_json::to_value(item).unwrap_or(Value::Null))
+                                        })
+                                        .collect::<Vec<_>>()
+                                });
+                                if !items.is_empty() {
+                                    emit(&events, Event::MessageUpdates {
+                                        session: session.clone(),
+                                        epoch,
+                                        items,
+                                    });
+                                }
+                            }
+                            if changes.permissions(&id) || changes.forms(&session) {
+                                let (permissions, forms) = approvals_snapshot(&store.data, &session);
+                                emit(&events, Event::Approvals {
+                                    session,
+                                    epoch,
+                                    permissions,
+                                    forms,
+                                });
+                            }
                         }
                     }
                 }
