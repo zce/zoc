@@ -187,7 +187,17 @@ impl Zoc {
         self.data.stream_connected = false;
         self.data.error = None;
         self.data.current_session = None;
+        self.data.current_project = None;
+        self.data.epoch = self.data.epoch.wrapping_add(1);
+        self.data.projects.clear();
         self.data.sessions.clear();
+        self.data.messages.clear();
+        self.data.permissions.clear();
+        self.data.forms.clear();
+        self.data.models.clear();
+        self.data.agents.clear();
+        self.data.selected_model = None;
+        self.data.selected_agent = None;
         self.rows.borrow_mut().clear();
         self.scroller.update(cx, |state, cx| state.reset(0, cx));
         self.data.prefs.endpoint = Some(url.clone());
@@ -341,7 +351,6 @@ impl Zoc {
                     });
                 if let Some(session) = target {
                     if self.data.current_session.as_ref() != Some(&session) {
-                        // Selecting after initial load happens on the UI event path.
                         self.data.select_session(session.clone());
                         self.rebuild_rows(cx);
                     }
@@ -349,6 +358,13 @@ impl Zoc {
                         session,
                         epoch: self.data.epoch,
                     });
+                } else {
+                    // A selected session may have been archived, removed or moved.
+                    // Never leave its old transcript shown under a different list.
+                    self.data.current_session = None;
+                    self.data.epoch = self.data.epoch.wrapping_add(1);
+                    self.rows.borrow_mut().clear();
+                    self.scroller.update(cx, |state, cx| state.reset(0, cx));
                 }
             }
             Event::Metadata {
@@ -703,8 +719,13 @@ impl Zoc {
     }
 
     fn toggle_archived(&mut self, cx: &mut Context<Self>) {
+        self.save_draft(cx);
         self.data.archived = !self.data.archived;
+        self.data.current_session = None;
+        self.data.epoch = self.data.epoch.wrapping_add(1);
         self.data.sessions.clear();
+        self.rows.borrow_mut().clear();
+        self.scroller.update(cx, |state, cx| state.reset(0, cx));
         self.refresh_sessions();
         cx.notify();
     }
