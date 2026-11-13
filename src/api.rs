@@ -766,7 +766,7 @@ fn spawn_stream(
 mod tests {
     use super::*;
 
-    use std::{io::{BufRead as _, BufReader as TestReader, Write as _}, net::TcpListener};
+    use std::{io::{BufReader as TestReader, Write as _}, net::TcpListener};
 
     // Deterministic HTTP fixture for client contract tests. It is never shipped
     // with the application and cannot respond to production UI actions.
