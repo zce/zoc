@@ -36,7 +36,14 @@ pub fn discover() -> Option<Connection> {
         })?;
     let path = state_home.join("opencode/service.json");
     let registration: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    parse_registration(&registration)
+}
+
+fn parse_registration(registration: &Value) -> Option<Connection> {
     let url = registration.get("url")?.as_str()?.to_string();
+    if url.trim().is_empty() {
+        return None;
+    }
     Some(Connection {
         url,
         username: default_user(),
@@ -48,7 +55,7 @@ pub fn discover() -> Option<Connection> {
         expected_pid: registration
             .get("pid")
             .and_then(Value::as_u64)
-            .map(|pid| pid as u32),
+            .and_then(|pid| u32::try_from(pid).ok()),
     })
 }
 
@@ -266,15 +273,21 @@ pub fn spawn(events: UiSender<Event>) -> Sender<Command> {
                 match ServiceClient::connect(config.clone()) {
                     Ok(service) => {
                         let info = service.get("/api/info", &[]).unwrap_or_default();
-                        let projects = service.projects().unwrap_or_default();
-                        emit(
-                            &events,
-                            Event::Connected {
-                                connection: config,
-                                info,
-                                projects,
-                            },
-                        );
+                        match service.projects() {
+                            Ok(projects) => emit(
+                                &events,
+                                Event::Connected {
+                                    connection: config,
+                                    info,
+                                    projects,
+                                },
+                            ),
+                            Err(error) => {
+                                client = None;
+                                emit(&events, Event::Error(format!("Cannot list projects: {error}")));
+                                continue;
+                            }
+                        }
                         let generation = sequence.fetch_add(1, Ordering::AcqRel) + 1;
                         spawn_stream(
                             service.clone(),
