@@ -316,9 +316,9 @@ impl Zoc {
                     .prefs
                     .last_project
                     .as_ref()
-                    .filter(|id| self.data.projects.iter().any(|p| &p.id == *id))
+                    .filter(|id| self.data.projects.iter().any(|p| p.id.as_str() == id.as_str()))
                     .cloned()
-                    .or_else(|| self.data.projects.first().map(|p| p.id.clone()));
+                    .or_else(|| self.data.projects.first().map(|p| p.id.0.clone()));
                 if let Some(id) = selected {
                     self.switch_project(id, cx);
                 }
@@ -385,7 +385,7 @@ impl Zoc {
                     });
                 }
                 if self.data.selected_agent.is_none() {
-                    self.data.selected_agent = self.data.agents.first().map(|a| a.id.clone());
+                    self.data.selected_agent = self.data.agents.first().map(|a| a.id.0.clone());
                 }
             }
             Event::Conversation {
