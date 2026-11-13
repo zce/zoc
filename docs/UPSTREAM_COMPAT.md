@@ -1,10 +1,10 @@
 # OpenCode upstream reuse baseline
 
-Recorded November 13, 2026.
+Recorded November 13, 2026. Rechecked against the current `oc-rust` head before integration.
 
 ## Pinned references
 
-- OpenCode Rust client: `anomalyco/opencode` commit `a1834e74f515cd113cf9fbffcad672bc5ea41541` (the `oc-rust` line).
+- OpenCode Rust client: `anomalyco/opencode` commit `5b9a2128fd39abd0126b856c7d0f6f9aa7c0fb5f` (the `oc-rust` line).
 - GPUI Kit: stable release `v0.9.1`, Cargo requirement `=0.9.1`.
 - CI reference: `zce/make-slack-great-again` `.github/workflows/ci.yml`.
 
