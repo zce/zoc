@@ -1,41 +1,55 @@
-# Upstream compatibility baseline
+# OpenCode upstream reuse baseline
 
-Recorded November 12, 2026.
+Recorded November 13, 2026.
 
 ## Pinned references
 
-- OpenCode: `anomalyco/opencode` `dev` at `ec263d62b6e3bfd7df6e5a256d1148b0b277bc1e`
-- GPUI Kit: stable release `v0.9.1`, Cargo requirement `=0.9.1`
-- CI reference: `zce/make-slack-great-again` `dev` `.github/workflows/ci.yml`
+- OpenCode Rust client: `anomalyco/opencode` commit `a1834e74f515cd113cf9fbffcad672bc5ea41541` (the `oc-rust` line).
+- GPUI Kit: stable release `v0.9.1`, Cargo requirement `=0.9.1`.
+- CI reference: `zce/make-slack-great-again` `.github/workflows/ci.yml`.
 
-## Protocol
+All OpenCode Git dependencies use the same immutable commit. Do not float these dependencies to a branch head. Upgrade them together after checking generated API changes, store behavior and compatibility tests.
 
-ZOC uses the V2 service API, not the older OpenCode V1 endpoints.
+## Ownership boundary
 
-| Feature | Current API |
-|---|---|
-| Verify server | `GET /api/info` (version, pid) |
-| Project list | `GET /api/project` |
-| Sessions | `GET/POST /api/session`, cursor paging, project filter |
-| Update session | `PATCH /api/session/:sessionID` |
-| Transcript | `GET /api/session/:sessionID/message`, cursor paging |
-| Prompt | `POST /api/session/:sessionID/prompt` |
-| Agent/model | `GET /api/agent`, `GET /api/model`, per-session switch endpoints |
-| Interrupt | `POST /api/session/:sessionID/interrupt` |
-| Approvals | `GET /api/session/:sessionID/permission`; reply on request-specific endpoint |
-| Forms | `GET /api/session/:sessionID/form`; form reply with keyed answer |
-| Global events | `GET /api/event` (volatile SSE) |
-| File preview | `GET /api/fs/read/*` with location query |
-| Git changes/diffs | `GET /api/vcs/status`, `GET /api/vcs/diff` |
+ZOC is a native desktop client. It owns the desktop window, layout, navigation and presentation. OpenCode remains authoritative for protocol, service registration, session semantics, transcript state, event handling, prompt admission and approval/form behavior.
 
-Location-scoped operations use `location[directory]` as a deep-object query parameter. A Project ID, the canonical directory and the Session's current Location are **different identities**; this distinction is preserved in routing.
+| Concern | Upstream owner | ZOC responsibility |
+|---|---|---|
+| HTTP API, auth, generated request/response types | `opencode-api`, `opencode-api-types` | Call generated methods and render results |
+| Service registration, XDG paths, channel filenames | `opencode-local` | Offer connection override and show connection status |
+| SSE lifecycle, reconnect/stall handling, event batching | `opencode-api::events`, `opencode-store::connection` | Observe connection status |
+| Project/session cache and change tracking | `opencode-store` | Project snapshots into UI state |
+| Transcript paging, deltas, tool updates | `opencode-store` | Render official message data |
+| Pending permissions/forms and replies | `opencode-store` | Present choices and submit user decisions |
+| Prompt admission and optimistic inbox state | `opencode-store` | Compose prompt and display delivery state |
+| Native widgets, Markdown/code, diff and window behavior | GPUI Kit / ZOC | Native rendering and interaction |
 
-Native message objects have user `text` and assistant `content` arrays rather than historical V1 message-part transport. SSE has events such as `session.text.delta`, `session.text.ended`, `session.reasoning.delta`, `session.tool.called`, `session.tool.success`, `session.execution.started`, `permission.asked` and `form.created`. The event stream is volatile, so reconnects need snapshot reconciliation.
+Do not introduce OpenTUI, a second SSE consumer, a second transcript reducer, a parallel permission/form state machine, or a local provider/agent runtime. If an upstream Rust crate already owns the behavior, use it rather than porting the TypeScript implementation.
 
-The app uses GPUI Kit's `Textarea`, `TextView` and `MessageScroller`, avoiding a WebView.
+## V2 protocol
 
-## Contract evidence
+The client uses the V2 service API through generated methods. Important routes include:
 
-Sources: the OpenCode baseline's `packages/protocol/src/groups/{session,message,permission,form,event,model,agent,fs,vcs,location}.ts`, `packages/schema/src/{session,session-message,session-event,permission,form,model,project,location}.ts`, and GPUI Kit v0.9.1 component docs/examples.
+- `GET /api/info`, `GET /api/project`
+- `GET/POST /api/session`, `PATCH /api/session/:sessionID`
+- `GET /api/session/:sessionID/message`
+- `GET /api/agent`, `GET /api/model`
+- `POST /api/session/:sessionID/prompt`, interrupt and model/agent switch endpoints
+- Session permission/form endpoints
+- `GET /api/event` via the official store connection
+- File read and VCS status/diff endpoints
 
-Compatibility is scoped to the recorded baseline. Builds against newer OpenCode releases require protocol regression tests and should not be assumed compatible without verification.
+Location-scoped operations use the official generated `LocationQueryInput`. A Project ID, its canonical directory and a Session's current Location are different identities; do not substitute one for another.
+
+## Validation
+
+The isolated compatibility tests exercise official model references, unknown future transcript members, session cursor responses, generated request/auth construction and the event endpoint. Production integration is validated separately by ZOC CI.
+
+Compatibility is scoped to the pinned commit. Upgrading OpenCode requires:
+1. Review changes to the Rust crate APIs and their dependency graph.
+2. Run protocol and store behavior tests.
+3. Verify service registration and local/remote proxy behavior.
+4. Run the full Linux build and a real native client session.
+
+The app uses GPUI Kit's native components and does not embed a WebView.
