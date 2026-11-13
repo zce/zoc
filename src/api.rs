@@ -908,10 +908,22 @@ mod tests {
                 let mut first = String::new();
                 reader.read_line(&mut first).unwrap();
                 let request_target = first.split_whitespace().nth(1).unwrap_or("");
-                assert!(
-                    request_target.starts_with(expected_path),
-                    "expected {expected_path:?}, received {request_target:?}"
-                );
+                let (actual_path, actual_query) =
+                    request_target.split_once('?').unwrap_or((request_target, ""));
+                let (expected_path, expected_query) =
+                    expected_path.split_once('?').unwrap_or((expected_path, ""));
+                assert_eq!(actual_path, expected_path, "unexpected request path");
+                let mut actual: Vec<_> = actual_query
+                    .split('&')
+                    .filter(|part| !part.is_empty())
+                    .collect();
+                let mut expected: Vec<_> = expected_query
+                    .split('&')
+                    .filter(|part| !part.is_empty())
+                    .collect();
+                actual.sort_unstable();
+                expected.sort_unstable();
+                assert_eq!(actual, expected, "unexpected query parameters");
                 loop {
                     let mut line = String::new();
                     reader.read_line(&mut line).unwrap();
@@ -1007,7 +1019,7 @@ mod tests {
                 json!({"data":[session("ses_2")],"cursor":{"next":"opaque-next"}}),
             ),
             (
-                "/api/session?cursor=opaque-next",
+                "/api/session?limit=50&order=desc&parentID=null&archived=false&project=prj_1&cursor=opaque-next",
                 json!({"data":[session("ses_1")],"cursor":{}}),
             ),
         ]);
