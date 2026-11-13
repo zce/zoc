@@ -419,7 +419,7 @@ impl Zoc {
             }
             Event::Created(session) => {
                 let id = session.id.0.clone();
-                self.data.sessions.insert(0, session);
+                self.data.sessions.insert(0, *session);
                 self.data.select_session(id.clone());
                 self.rebuild_rows(cx);
                 self.send_command(Command::LoadConversation {
