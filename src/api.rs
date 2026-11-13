@@ -237,6 +237,7 @@ pub fn spawn(events: UiSender<Event>) -> Sender<Command> {
                                 continue;
                             }
                         }
+                        service.store.start();
                         let generation = sequence.fetch_add(1, Ordering::AcqRel) + 1;
                         spawn_store_watch(
                             service.store.clone(),
@@ -284,9 +285,31 @@ struct WatchContext {
 
 struct StoreConnection {
     data: StoreData,
-    connection: opencode_api::events::Connection,
-    _task: JoinHandle<()>,
+    connection: Mutex<Option<opencode_api::events::Connection>>,
+    _task: Mutex<Option<JoinHandle<()>>>,
     context: Arc<Mutex<WatchContext>>,
+}
+
+impl StoreConnection {
+    fn start(&self) {
+        let mut connection = self.connection.lock().unwrap_or_else(|error| error.into_inner());
+        if connection.is_some() {
+            return;
+        }
+        let (stream, task) =
+            store_connection::connect(&self.data, opencode_api::events::Options::default());
+        *connection = Some(stream);
+        *self._task.lock().unwrap_or_else(|error| error.into_inner()) = Some(task);
+    }
+
+    fn watch(&self) -> tokio::sync::watch::Receiver<opencode_api::events::State> {
+        self.connection
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .expect("store connection started before watching")
+            .watch()
+    }
 }
 
 #[derive(Clone)]
@@ -349,12 +372,10 @@ impl ServiceClient {
                 omit_tool_file_data: true,
             },
         );
-        let (connection, task) =
-            store_connection::connect(&data, opencode_api::events::Options::default());
         let store = Arc::new(StoreConnection {
             data,
-            connection,
-            _task: task,
+            connection: Mutex::new(None),
+            _task: Mutex::new(None),
             context: Arc::new(Mutex::new(WatchContext::default())),
         });
         Ok(Self { client, info, store })
@@ -774,7 +795,7 @@ fn spawn_store_watch(
     runtime.spawn(async move {
         let mut revisions = store.data.subscribe();
         let mut seen = store.data.revision();
-        let mut connection = store.connection.watch();
+        let mut connection = store.watch();
         let mut last_status = connection.borrow().status;
 
         loop {
