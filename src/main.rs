@@ -413,7 +413,31 @@ impl Zoc {
                 self.data.set_messages(&session, messages);
                 self.data.permissions.insert(session.clone(), permissions);
                 self.data.forms.insert(session, forms);
-                self.sync_rows(cx);
+                self.rebuild_rows(cx);
+            }
+            Event::MessageUpdates { session, epoch, items } => {
+                if self.data.current_session.as_deref() != Some(&session)
+                    || self.data.epoch != epoch
+                {
+                    return;
+                }
+                if !self.data.update_messages(&session, items.clone())
+                    || !self.sync_message_rows(&items, cx)
+                {
+                    self.send_command(Command::LoadConversation {
+                        session,
+                        epoch: self.data.epoch,
+                    });
+                }
+            }
+            Event::Approvals { session, epoch, permissions, forms } => {
+                if self.data.current_session.as_deref() != Some(&session)
+                    || self.data.epoch != epoch
+                {
+                    return;
+                }
+                self.data.permissions.insert(session.clone(), permissions);
+                self.data.forms.insert(session, forms);
             }
             Event::Created(session) => {
                 let id = session.id.0.clone();
@@ -620,34 +644,44 @@ impl Zoc {
             .update(cx, |state, cx| state.reset(length, cx));
     }
 
-    fn sync_rows(&mut self, cx: &mut Context<Self>) {
-        let messages = self.data.active_messages().to_vec();
-        let previous = self.rows.borrow().len();
-        if messages.len() < previous {
-            self.rebuild_rows(cx);
-            return;
-        }
-        // Only the newest assistant row normally changes during streaming.
-        let start = previous.saturating_sub(1);
-        for index in start..messages.len() {
-            let row = self.row_from_value(&messages[index], cx);
-            let mut rows = self.rows.borrow_mut();
-            if index < rows.len() {
-                rows[index] = row;
-            } else {
-                rows.push(row);
+    fn sync_message_rows(&mut self, updates: &[Value], cx: &mut Context<Self>) -> bool {
+        let indices = {
+            let messages = self.data.active_messages();
+            if self.rows.borrow().len() != messages.len() {
+                return false;
+            }
+            updates
+                .iter()
+                .map(|update| {
+                    let id = update.get("id")?.as_str()?;
+                    messages
+                        .iter()
+                        .position(|message| message.get("id").and_then(Value::as_str) == Some(id))
+                })
+                .collect::<Option<Vec<_>>>()
+        };
+        let Some(indices) = indices else {
+            return false;
+        };
+        let rows: Vec<_> = updates
+            .iter()
+            .map(|message| self.row_from_value(message, cx))
+            .collect();
+        {
+            let mut current = self.rows.borrow_mut();
+            for (index, row) in indices.iter().copied().zip(rows) {
+                let Some(slot) = current.get_mut(index) else {
+                    return false;
+                };
+                *slot = row;
             }
         }
-        if messages.len() > previous {
-            let count = messages.len() - previous;
+        for index in indices {
             self.scroller.update(cx, |state, cx| {
-                state.append(count, cx);
-            });
-        } else if !messages.is_empty() {
-            self.scroller.update(cx, |state, cx| {
-                state.remeasure_items(start..messages.len(), cx);
+                state.remeasure_items(index..index + 1, cx);
             });
         }
+        true
     }
 
     fn open_file(&mut self, path: String) {
