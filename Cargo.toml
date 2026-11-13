@@ -24,3 +24,8 @@ panic = "abort"
 gpui-pre = { opt-level = 3 }
 gpui-component = { opt-level = 3 }
 gpui-kit = { opt-level = 3 }
+
+# Isolated compatibility probe: keep official native protocol types out of
+# production until a stage-scoped migration passes CI and native validation.
+[dev-dependencies]
+opencode-api-types = { git = "https://github.com/anomalyco/opencode", rev = "a1834e74f515cd113cf9fbffcad672bc5ea41541" }
