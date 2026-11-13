@@ -1,5 +1,4 @@
 use crate::api::{Agent, Connection, Model, ModelRef, Project, Session};
-use opencode_api::generated::{ProjectID, SessionID, SessionInfoTime};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -461,6 +460,7 @@ pub enum StreamChange {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use opencode_api::generated::{ProjectID, SessionID, SessionInfoTime};
     #[test]
     fn working_order_is_run_start() {
         let mut state = AppState::default();
