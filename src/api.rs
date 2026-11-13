@@ -660,7 +660,7 @@ async fn run_command(
                         if let Some(model) = model {
                             client
                                 .session_switch_model(&SessionSwitchModelInput {
-                                    session_id,
+                                    session_id: prepare_session,
                                     model,
                                 })
                                 .await
