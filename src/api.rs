@@ -440,16 +440,19 @@ impl ServiceClient {
         let mut result = Vec::new();
         let mut cursor = None::<String>;
         for _ in 0..20 {
-            let mut query = vec![
-                ("project", project),
-                ("order", "desc"),
-                ("parentID", "null"),
-                ("limit", "50"),
-                ("archived", if archived { "true" } else { "false" }),
-            ];
-            if let Some(ref cursor) = cursor {
-                query.push(("cursor", cursor));
-            }
+            // The cursor encodes the original filter and order. Do not mix it with
+            // first-page parameters: V2 cursors represent a stable traversal.
+            let query = if let Some(ref cursor) = cursor {
+                vec![("cursor", cursor.as_str())]
+            } else {
+                vec![
+                    ("project", project),
+                    ("order", "desc"),
+                    ("parentID", "null"),
+                    ("limit", "50"),
+                    ("archived", if archived { "true" } else { "false" }),
+                ]
+            };
             let response = self.get("/api/session", &query)?;
             let items: Vec<Session> = serde_json::from_value(response["data"].clone())?;
             result.extend(
