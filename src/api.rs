@@ -284,7 +284,10 @@ pub fn spawn(events: UiSender<Event>) -> Sender<Command> {
                             ),
                             Err(error) => {
                                 client = None;
-                                emit(&events, Event::Error(format!("Cannot list projects: {error}")));
+                                emit(
+                                    &events,
+                                    Event::Error(format!("Cannot list projects: {error}")),
+                                );
                                 continue;
                             }
                         }
@@ -766,7 +769,10 @@ fn spawn_stream(
 mod tests {
     use super::*;
 
-    use std::{io::{BufReader as TestReader, Write as _}, net::TcpListener};
+    use std::{
+        io::{BufReader as TestReader, Write as _},
+        net::TcpListener,
+    };
 
     // Deterministic HTTP fixture for client contract tests. It is never shipped
     // with the application and cannot respond to production UI actions.
@@ -787,12 +793,15 @@ mod tests {
                 loop {
                     let mut line = String::new();
                     reader.read_line(&mut line).unwrap();
-                    if line == "\r\n" || line.is_empty() { break; }
+                    if line == "\r\n" || line.is_empty() {
+                        break;
+                    }
                 }
                 let payload = body.to_string();
                 let reply = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
-                    payload.len(), payload
+                    payload.len(),
+                    payload
                 );
                 stream.write_all(reply.as_bytes()).unwrap();
             }
@@ -820,15 +829,21 @@ mod tests {
     fn local_service_connects_and_lists_real_project_ids() {
         let (url, worker) = mock_api(vec![
             ("/api/info", json!({"pid":450,"version":"2.2.6"})),
-            ("/api/project", json!([
-                {"id":"prj_alpha","canonical":"/work/alpha","name":"Alpha"},
-                {"id":"prj_beta","canonical":"/work/beta","name":"Beta"}
-            ])),
+            (
+                "/api/project",
+                json!([
+                    {"id":"prj_alpha","canonical":"/work/alpha","name":"Alpha"},
+                    {"id":"prj_beta","canonical":"/work/beta","name":"Beta"}
+                ]),
+            ),
         ]);
         let client = ServiceClient::connect(Connection {
-            url, username: "opencode".into(), password: "secret".into(),
+            url,
+            username: "opencode".into(),
+            password: "secret".into(),
             expected_pid: Some(450),
-        }).unwrap();
+        })
+        .unwrap();
         let projects = client.projects().unwrap();
         assert_eq!(projects.len(), 2);
         assert_eq!(projects[1].id, "prj_beta");
@@ -838,22 +853,35 @@ mod tests {
 
     #[test]
     fn session_cursors_do_not_repeat_first_page_filters() {
-        let make_session = |id: &str| json!({
-            "id":id,"projectID":"prj_1","location":{"directory":"/work/one"},
-            "time":{"created":1,"updated":3}
-        });
+        let make_session = |id: &str| {
+            json!({
+                "id":id,"projectID":"prj_1","location":{"directory":"/work/one"},
+                "time":{"created":1,"updated":3}
+            })
+        };
         let (url, worker) = mock_api(vec![
             ("/api/info", json!({"pid":1,"version":"2.2.6"})),
-            ("/api/session?project=prj_1&order=desc&parentID=null&limit=50&archived=false",
-                json!({"data":[make_session("ses_2")],"cursor":{"next":"opaque-next"}})),
-            ("/api/session?cursor=opaque-next",
-                json!({"data":[make_session("ses_1")],"cursor":{}})),
+            (
+                "/api/session?project=prj_1&order=desc&parentID=null&limit=50&archived=false",
+                json!({"data":[make_session("ses_2")],"cursor":{"next":"opaque-next"}}),
+            ),
+            (
+                "/api/session?cursor=opaque-next",
+                json!({"data":[make_session("ses_1")],"cursor":{}}),
+            ),
         ]);
         let client = ServiceClient::connect(Connection {
-            url, username: "opencode".into(), password:String::new(), expected_pid: None,
-        }).unwrap();
+            url,
+            username: "opencode".into(),
+            password: String::new(),
+            expected_pid: None,
+        })
+        .unwrap();
         let sessions = client.sessions("prj_1", false).unwrap();
-        assert_eq!(sessions.iter().map(|s|s.id.as_str()).collect::<Vec<_>>(), vec!["ses_2","ses_1"]);
+        assert_eq!(
+            sessions.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            vec!["ses_2", "ses_1"]
+        );
         worker.join().unwrap();
     }
 
