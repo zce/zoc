@@ -171,7 +171,10 @@ impl AppState {
             .copied()
             .unwrap_or(session.time.viewed.unwrap_or(0.0));
         if session.time.idle.is_some_and(|idle| idle > viewed)
-            || (session.outcome.as_ref().is_some_and(|outcome| outcome.as_str() == "failed")
+            || (session
+                .outcome
+                .as_ref()
+                .is_some_and(|outcome| outcome.as_str() == "failed")
                 && session.time.updated > viewed)
         {
             return InboxGroup::Unread;
@@ -191,7 +194,10 @@ impl AppState {
                         .unwrap_or("")
                         .to_lowercase()
                         .contains(&filter.to_lowercase())
-                    || s.id.as_str().to_lowercase().contains(&filter.to_lowercase())
+                    || s.id
+                        .as_str()
+                        .to_lowercase()
+                        .contains(&filter.to_lowercase())
             })
             .cloned()
             .collect();
@@ -218,14 +224,13 @@ impl AppState {
         self.current_session = Some(session.clone());
         self.prefs.last_session = Some(session.clone());
         self.epoch = self.epoch.wrapping_add(1);
-        if let Some((idle, model, agent)) = self
-            .active_session()
-            .map(|entry| (
+        if let Some((idle, model, agent)) = self.active_session().map(|entry| {
+            (
                 entry.time.idle,
                 entry.model.clone(),
                 entry.agent.as_ref().map(|agent| agent.0.clone()),
-            ))
-        {
+            )
+        }) {
             if let Some(idle) = idle {
                 self.prefs.read.insert(session.clone(), idle);
             }
@@ -257,7 +262,10 @@ impl AppState {
         else {
             return false;
         };
-        let messages = self.messages.get_mut(session).expect("messages were checked above");
+        let messages = self
+            .messages
+            .get_mut(session)
+            .expect("messages were checked above");
         for (index, update) in indices.into_iter().zip(updates) {
             messages[index] = update;
         }
@@ -292,14 +300,17 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
     use opencode_api::generated::{ProjectID, SessionID, SessionInfoTime};
+    use serde_json::json;
     #[test]
     fn message_updates_replace_only_the_matching_transcript_rows() {
         let mut state = AppState::default();
         state.messages.insert(
             "ses_1".into(),
-            vec![json!({"id":"msg_1","text":"old"}), json!({"id":"msg_2","text":"keep"})],
+            vec![
+                json!({"id":"msg_1","text":"old"}),
+                json!({"id":"msg_2","text":"keep"}),
+            ],
         );
 
         assert!(state.update_messages("ses_1", vec![json!({"id":"msg_1","text":"new"})]));
@@ -324,7 +335,9 @@ mod tests {
                 ..Default::default()
             });
         }
-        assert_eq!(state.sorted_inbox(InboxGroup::Working, "")[0].id.as_str(), "b");
+        assert_eq!(
+            state.sorted_inbox(InboxGroup::Working, "")[0].id.as_str(),
+            "b"
+        );
     }
-
 }

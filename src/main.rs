@@ -316,7 +316,12 @@ impl Zoc {
                     .prefs
                     .last_project
                     .as_ref()
-                    .filter(|id| self.data.projects.iter().any(|p| p.id.as_str() == id.as_str()))
+                    .filter(|id| {
+                        self.data
+                            .projects
+                            .iter()
+                            .any(|p| p.id.as_str() == id.as_str())
+                    })
                     .cloned()
                     .or_else(|| self.data.projects.first().map(|p| p.id.0.clone()));
                 if let Some(id) = selected {
@@ -326,8 +331,17 @@ impl Zoc {
             Event::Projects { projects } => {
                 self.data.projects = projects;
                 if self.data.current_project.as_ref().is_some_and(|current| {
-                    !self.data.projects.iter().any(|project| project.id.as_str() == current)
-                }) && let Some(id) = self.data.projects.first().map(|project| project.id.0.clone()) {
+                    !self
+                        .data
+                        .projects
+                        .iter()
+                        .any(|project| project.id.as_str() == current)
+                }) && let Some(id) = self
+                    .data
+                    .projects
+                    .first()
+                    .map(|project| project.id.0.clone())
+                {
                     self.switch_project(id, cx);
                 }
             }
@@ -345,9 +359,12 @@ impl Zoc {
                 }
                 self.data.sessions = items;
                 self.data.running = running.into_iter().collect();
-                if let Some(session) = self.data.current_session.as_deref()
-                    .and_then(|id| self.data.sessions.iter().find(|item| item.id.as_str() == id))
-                {
+                if let Some(session) = self.data.current_session.as_deref().and_then(|id| {
+                    self.data
+                        .sessions
+                        .iter()
+                        .find(|item| item.id.as_str() == id)
+                }) {
                     self.data.selected_model = session.model.clone();
                     self.data.selected_agent = session.agent.as_ref().map(|agent| agent.0.clone());
                 }
@@ -355,14 +372,24 @@ impl Zoc {
                     .data
                     .current_session
                     .as_ref()
-                    .filter(|id| self.data.sessions.iter().any(|s| s.id.as_str() == id.as_str()))
+                    .filter(|id| {
+                        self.data
+                            .sessions
+                            .iter()
+                            .any(|s| s.id.as_str() == id.as_str())
+                    })
                     .cloned()
                     .or_else(|| {
                         self.data
                             .prefs
                             .last_session
                             .as_ref()
-                            .filter(|id| self.data.sessions.iter().any(|s| s.id.as_str() == id.as_str()))
+                            .filter(|id| {
+                                self.data
+                                    .sessions
+                                    .iter()
+                                    .any(|s| s.id.as_str() == id.as_str())
+                            })
                             .cloned()
                     });
                 if let Some(session) = target {
@@ -438,14 +465,20 @@ impl Zoc {
                 self.data.forms.insert(session, forms);
                 if append_only {
                     self.sync_appended_rows(cx);
-                    if !changed_existing.is_empty() && !self.sync_message_rows(&changed_existing, cx) {
+                    if !changed_existing.is_empty()
+                        && !self.sync_message_rows(&changed_existing, cx)
+                    {
                         self.rebuild_rows(cx);
                     }
                 } else {
                     self.rebuild_rows(cx);
                 }
             }
-            Event::MessageUpdates { session, epoch, items } => {
+            Event::MessageUpdates {
+                session,
+                epoch,
+                items,
+            } => {
                 if self.data.current_session.as_deref() != Some(&session)
                     || self.data.epoch != epoch
                 {
@@ -460,7 +493,12 @@ impl Zoc {
                     });
                 }
             }
-            Event::Approvals { session, epoch, permissions, forms } => {
+            Event::Approvals {
+                session,
+                epoch,
+                permissions,
+                forms,
+            } => {
                 if self.data.current_session.as_deref() != Some(&session)
                     || self.data.epoch != epoch
                 {
@@ -471,7 +509,9 @@ impl Zoc {
             }
             Event::Created(session) => {
                 let id = session.id.0.clone();
-                self.data.sessions.retain(|existing| existing.id.as_str() != id);
+                self.data
+                    .sessions
+                    .retain(|existing| existing.id.as_str() != id);
                 self.data.sessions.insert(0, *session);
                 self.data.select_session(id.clone());
                 self.rebuild_rows(cx);
@@ -694,7 +734,8 @@ impl Zoc {
         }
         if messages.len() > previous {
             let count = messages.len() - previous;
-            self.scroller.update(cx, |state, cx| state.append(count, cx));
+            self.scroller
+                .update(cx, |state, cx| state.append(count, cx));
         } else if !messages.is_empty() {
             self.scroller.update(cx, |state, cx| {
                 state.remeasure_items(start..messages.len(), cx);

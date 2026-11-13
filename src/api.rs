@@ -5,17 +5,10 @@ use opencode_api::{
     generated::*,
     transport::{Reqwest, Transport},
 };
-use opencode_local::{
-    channel::Channels,
-    paths::Paths,
-    registration::Files,
-};
+use opencode_local::{channel::Channels, paths::Paths, registration::Files};
 use opencode_store::{
-    connection as store_connection,
-    inbox::Prompt as StorePrompt,
-    messages::LoadMore,
-    Data as StoreData,
-    Options as StoreOptions,
+    Data as StoreData, Options as StoreOptions, connection as store_connection,
+    inbox::Prompt as StorePrompt, messages::LoadMore,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -24,22 +17,20 @@ use std::{
     future::Future,
     net::IpAddr,
     sync::{
-        Arc,
-        Mutex,
+        Arc, Mutex,
         atomic::{AtomicU64, Ordering},
         mpsc::{self, Sender},
     },
     thread,
     time::Duration,
 };
-use tokio::{runtime::{Builder, Handle}, task::JoinHandle};
+use tokio::{
+    runtime::{Builder, Handle},
+    task::JoinHandle,
+};
 
 pub use opencode_api::generated::{
-    AgentInfo as Agent,
-    ModelInfo as Model,
-    ModelRef,
-    Project,
-    SessionInfo as Session,
+    AgentInfo as Agent, ModelInfo as Model, ModelRef, Project, SessionInfo as Session,
 };
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
@@ -215,7 +206,10 @@ pub fn spawn(events: UiSender<Event>) -> Sender<Command> {
         {
             Ok(runtime) => runtime,
             Err(error) => {
-                emit(&events, Event::Error(format!("Cannot start API runtime: {error}")));
+                emit(
+                    &events,
+                    Event::Error(format!("Cannot start API runtime: {error}")),
+                );
                 return;
             }
         };
@@ -303,7 +297,10 @@ struct StoreConnection {
 
 impl StoreConnection {
     fn start(&self) {
-        let mut connection = self.connection.lock().unwrap_or_else(|error| error.into_inner());
+        let mut connection = self
+            .connection
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         if connection.is_some() {
             return;
         }
@@ -347,8 +344,8 @@ impl ServiceClient {
 
         // Keep loopback traffic out of a developer's HTTP proxy. Remote endpoints continue to
         // follow the same proxy environment as the official OpenCode HTTP client.
-        let mut builder = opencode_api::transport::client_builder()
-            .connect_timeout(CONNECT_TIMEOUT);
+        let mut builder =
+            opencode_api::transport::client_builder().connect_timeout(CONNECT_TIMEOUT);
         if local {
             builder = builder.no_proxy();
         }
@@ -389,7 +386,11 @@ impl ServiceClient {
             _task: Mutex::new(None),
             context: Arc::new(Mutex::new(WatchContext::default())),
         });
-        Ok(Self { client, info, store })
+        Ok(Self {
+            client,
+            info,
+            store,
+        })
     }
 
     async fn call<T>(
@@ -408,16 +409,19 @@ impl ServiceClient {
             .project_sync()
             .await
             .map_err(|error| anyhow::anyhow!(error.tui_message()))?;
-        Ok(self.store.data.read(|state| state.projects().into_iter().cloned().collect()))
+        Ok(self
+            .store
+            .data
+            .read(|state| state.projects().into_iter().cloned().collect()))
     }
 
-    async fn sessions(
-        &self,
-        project: &str,
-        archived: bool,
-    ) -> anyhow::Result<Vec<Session>> {
+    async fn sessions(&self, project: &str, archived: bool) -> anyhow::Result<Vec<Session>> {
         {
-            let mut context = self.store.context.lock().unwrap_or_else(|error| error.into_inner());
+            let mut context = self
+                .store
+                .context
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             context.project = Some(project.to_owned());
             context.archived = archived;
         }
@@ -450,10 +454,7 @@ impl ServiceClient {
         Ok(result)
     }
 
-    async fn conversation(
-        &self,
-        id: &str,
-    ) -> anyhow::Result<(Vec<Value>, Vec<Value>, Vec<Value>)> {
+    async fn conversation(&self, id: &str) -> anyhow::Result<(Vec<Value>, Vec<Value>, Vec<Value>)> {
         let session_id = SessionID(id.to_owned());
         self.store
             .data
@@ -462,7 +463,13 @@ impl ServiceClient {
             .map_err(|error| anyhow::anyhow!(error.tui_message()))?;
         self.store
             .data
-            .message_load_more(&session_id, LoadMore { all: true, cancel: None })
+            .message_load_more(
+                &session_id,
+                LoadMore {
+                    all: true,
+                    cancel: None,
+                },
+            )
             .await
             .map_err(|error| anyhow::anyhow!(error.tui_message()))?;
         let _ = self.store.data.permission_sync(&session_id).await;
@@ -473,19 +480,24 @@ impl ServiceClient {
 
     fn running_sessions(&self) -> Vec<String> {
         self.store.data.read(|state| {
-            state.active_sessions().into_iter().map(|session| session.0.clone()).collect()
+            state
+                .active_sessions()
+                .into_iter()
+                .map(|session| session.0.clone())
+                .collect()
         })
     }
 
     fn set_active_session(&self, session: String, epoch: u64) {
-        let mut context = self.store.context.lock().unwrap_or_else(|error| error.into_inner());
+        let mut context = self
+            .store
+            .context
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         context.session = Some((session, epoch));
     }
 
-    async fn metadata(
-        &self,
-        directory: &str,
-    ) -> anyhow::Result<(Vec<Model>, Vec<Agent>)> {
+    async fn metadata(&self, directory: &str) -> anyhow::Result<(Vec<Model>, Vec<Agent>)> {
         let location = Some(LocationQueryInput {
             directory: Some(directory.to_owned()),
         });
@@ -591,12 +603,15 @@ async fn run_command(
             );
         }
         Command::Create { directory } => {
-            let (_, task) = service.store.data.session_create(opencode_store::CreateSession {
-                location: Some(LocationPublicRef {
-                    directory: AbsolutePath(directory),
-                }),
-                ..Default::default()
-            });
+            let (_, task) = service
+                .store
+                .data
+                .session_create(opencode_store::CreateSession {
+                    location: Some(LocationPublicRef {
+                        directory: AbsolutePath(directory),
+                    }),
+                    ..Default::default()
+                });
             let session = task
                 .await
                 .map_err(|error| anyhow::anyhow!(error.tui_message()))?;
@@ -665,9 +680,11 @@ async fn run_command(
                                 })
                                 .await
                                 .map_err(|error| {
-                                    opencode_store::Error::new(opencode_api::error::Error::Transport(
-                                        format!("Failed to switch model: {error}"),
-                                    ))
+                                    opencode_store::Error::new(
+                                        opencode_api::error::Error::Transport(format!(
+                                            "Failed to switch model: {error}"
+                                        )),
+                                    )
                                 })?;
                         }
                         Ok(())
@@ -755,10 +772,7 @@ async fn run_command(
     Ok(())
 }
 
-fn conversation_snapshot(
-    data: &StoreData,
-    session: &str,
-) -> (Vec<Value>, Vec<Value>, Vec<Value>) {
+fn conversation_snapshot(data: &StoreData, session: &str) -> (Vec<Value>, Vec<Value>, Vec<Value>) {
     let id = SessionID(session.to_owned());
     data.read(|state| {
         let messages = state
@@ -971,8 +985,9 @@ mod tests {
                 let mut first = String::new();
                 reader.read_line(&mut first).unwrap();
                 let request_target = first.split_whitespace().nth(1).unwrap_or("");
-                let (actual_path, actual_query) =
-                    request_target.split_once('?').unwrap_or((request_target, ""));
+                let (actual_path, actual_query) = request_target
+                    .split_once('?')
+                    .unwrap_or((request_target, ""));
                 let (expected_path, expected_query) =
                     expected_path.split_once('?').unwrap_or((expected_path, ""));
                 assert_eq!(actual_path, expected_path, "unexpected request path");
@@ -1097,7 +1112,10 @@ mod tests {
             .unwrap();
         let sessions = rt.block_on(service.sessions("prj_1", false)).unwrap();
         assert_eq!(
-            sessions.iter().map(|session| session.id.as_str()).collect::<Vec<_>>(),
+            sessions
+                .iter()
+                .map(|session| session.id.as_str())
+                .collect::<Vec<_>>(),
             vec!["ses_2", "ses_1"]
         );
         worker.join().unwrap();
@@ -1126,7 +1144,8 @@ mod tests {
 
     #[test]
     fn official_project_and_timestamp_types_match_v2_wire_data() {
-        let project: Project = serde_json::from_value(project("prj_1", "/workspace/repo", "repo")).unwrap();
+        let project: Project =
+            serde_json::from_value(project("prj_1", "/workspace/repo", "repo")).unwrap();
         assert_eq!(project.canonical.as_str(), "/workspace/repo");
 
         let time: SessionInfoTime = serde_json::from_value(json!({
