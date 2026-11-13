@@ -275,10 +275,25 @@ fn emit(sender: &UiSender<Event>, event: Event) {
     let _ = sender.try_send(event);
 }
 
+#[derive(Clone, Default)]
+struct WatchContext {
+    project: Option<String>,
+    archived: bool,
+    session: Option<(String, u64)>,
+}
+
+struct StoreConnection {
+    data: StoreData,
+    connection: opencode_api::events::Connection,
+    _task: JoinHandle<()>,
+    context: Arc<Mutex<WatchContext>>,
+}
+
 #[derive(Clone)]
 struct ServiceClient {
     client: Client,
     info: ServerInfo,
+    store: Arc<StoreConnection>,
 }
 
 impl ServiceClient {
@@ -322,7 +337,27 @@ impl ServiceClient {
                 info.pid
             );
         }
-        Ok(Self { client, info })
+
+        let directory = std::env::current_dir()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let data = StoreData::new(
+            client.clone(),
+            StoreOptions {
+                directory,
+                initial_message_limit: Some(200),
+                omit_tool_file_data: true,
+            },
+        );
+        let (connection, task) =
+            store_connection::connect(&data, opencode_api::events::Options::default());
+        let store = Arc::new(StoreConnection {
+            data,
+            connection,
+            _task: task,
+            context: Arc::new(Mutex::new(WatchContext::default())),
+        });
+        Ok(Self { client, info, store })
     }
 
     async fn call<T>(
@@ -336,8 +371,12 @@ impl ServiceClient {
     }
 
     async fn projects(&self) -> anyhow::Result<Vec<Project>> {
-        self.call(self.client.project_list(&ProjectListInput::default()))
+        self.store
+            .data
+            .project_sync()
             .await
+            .map_err(|error| anyhow::anyhow!(error.tui_message()))?;
+        Ok(self.store.data.read(|state| state.projects().into_iter().cloned().collect()))
     }
 
     async fn sessions(
@@ -345,6 +384,11 @@ impl ServiceClient {
         project: &str,
         archived: bool,
     ) -> anyhow::Result<Vec<Session>> {
+        {
+            let mut context = self.store.context.lock().unwrap_or_else(|error| error.into_inner());
+            context.project = Some(project.to_owned());
+            context.archived = archived;
+        }
         let mut result = Vec::new();
         let mut cursor = None::<SessionsCursor>;
         for _ in 0..20 {
@@ -358,12 +402,14 @@ impl ServiceClient {
                 ..Default::default()
             };
             let response = self.call(self.client.session_list(&input)).await?;
-            result.extend(
-                response
-                    .data
-                    .into_iter()
-                    .filter(|session| session.project_id.0 == project && session.parent_id.is_none()),
-            );
+            for session in response
+                .data
+                .into_iter()
+                .filter(|session| session.project_id.0 == project && session.parent_id.is_none())
+            {
+                self.store.data.remember(session.clone());
+                result.push(session);
+            }
             cursor = response.cursor.next.flatten();
             if cursor.is_none() {
                 break;
@@ -377,48 +423,39 @@ impl ServiceClient {
         id: &str,
     ) -> anyhow::Result<(Vec<Value>, Vec<Value>, Vec<Value>)> {
         let session_id = SessionID(id.to_owned());
-        let mut messages = Vec::new();
-        let mut cursor = None::<String>;
-        for _ in 0..100 {
-            let input = MessageListInput {
-                session_id: session_id.clone(),
-                limit: Some(200),
-                order: Some(MessageListInputOrder::Asc),
-                cursor: cursor.clone(),
-                ..Default::default()
-            };
-            let response = self.call(self.client.message_list(&input)).await?;
-            messages.extend(
-                response
-                    .data
-                    .into_iter()
-                    .map(|message| serde_json::to_value(message).unwrap_or(Value::Null)),
-            );
-            cursor = response.cursor.next.flatten();
-            if cursor.is_none() {
-                break;
-            }
-        }
+        self.store
+            .data
+            .message_sync(&session_id)
+            .await
+            .map_err(|error| anyhow::anyhow!(error.tui_message()))?;
+        self.store
+            .data
+            .message_load_more(&session_id, LoadMore { all: true, cancel: None })
+            .await
+            .map_err(|error| anyhow::anyhow!(error.tui_message()))?;
+        self.store
+            .data
+            .permission_sync(&session_id)
+            .await
+            .map_err(|error| anyhow::anyhow!(error.tui_message()))?;
+        self.store
+            .data
+            .form_sync(id, None)
+            .await
+            .map_err(|error| anyhow::anyhow!(error.tui_message()))?;
 
-        let permissions = self
-            .call(self.client.permission_list(&PermissionListInput {
-                session_id: session_id.clone(),
-            }))
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .map(|permission| serde_json::to_value(permission).unwrap_or(Value::Null))
-            .collect();
-        let forms = self
-            .call(self.client.session_form_list(&SessionFormListInput {
-                session_id: id.to_owned(),
-            }))
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .map(|form| serde_json::to_value(form).unwrap_or(Value::Null))
-            .collect();
-        Ok((messages, permissions, forms))
+        Ok(conversation_snapshot(&self.store.data, id))
+    }
+
+    fn running_sessions(&self) -> Vec<String> {
+        self.store.data.read(|state| {
+            state.active_sessions().into_iter().map(|session| session.0.clone()).collect()
+        })
+    }
+
+    fn set_active_session(&self, session: String, epoch: u64) {
+        let mut context = self.store.context.lock().unwrap_or_else(|error| error.into_inner());
+        context.session = Some((session, epoch));
     }
 
     async fn metadata(
