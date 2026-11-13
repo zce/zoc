@@ -345,6 +345,12 @@ impl Zoc {
                 }
                 self.data.sessions = items;
                 self.data.running = running.into_iter().collect();
+                if let Some(session) = self.data.current_session.as_deref()
+                    .and_then(|id| self.data.sessions.iter().find(|item| item.id.as_str() == id))
+                {
+                    self.data.selected_model = session.model.clone();
+                    self.data.selected_agent = session.agent.as_ref().map(|agent| agent.0.clone());
+                }
                 let target = self
                     .data
                     .current_session
@@ -410,10 +416,21 @@ impl Zoc {
                 {
                     return;
                 }
+                let previous = self.data.active_messages();
+                let append_only = previous.len() <= messages.len()
+                    && self.rows.borrow().len() == previous.len()
+                    && previous.iter().zip(&messages).all(|(old, new)| {
+                        old.get("id").and_then(Value::as_str)
+                            == new.get("id").and_then(Value::as_str)
+                    });
                 self.data.set_messages(&session, messages);
                 self.data.permissions.insert(session.clone(), permissions);
                 self.data.forms.insert(session, forms);
-                self.rebuild_rows(cx);
+                if append_only {
+                    self.sync_appended_rows(cx);
+                } else {
+                    self.rebuild_rows(cx);
+                }
             }
             Event::MessageUpdates { session, epoch, items } => {
                 if self.data.current_session.as_deref() != Some(&session)
@@ -643,6 +660,33 @@ impl Zoc {
         *self.rows.borrow_mut() = rows;
         self.scroller
             .update(cx, |state, cx| state.reset(length, cx));
+    }
+
+    fn sync_appended_rows(&mut self, cx: &mut Context<Self>) {
+        let messages = self.data.active_messages().to_vec();
+        let previous = self.rows.borrow().len();
+        if messages.len() < previous {
+            self.rebuild_rows(cx);
+            return;
+        }
+        let start = previous.saturating_sub(1);
+        for index in start..messages.len() {
+            let row = self.row_from_value(&messages[index], cx);
+            let mut rows = self.rows.borrow_mut();
+            if index < rows.len() {
+                rows[index] = row;
+            } else {
+                rows.push(row);
+            }
+        }
+        if messages.len() > previous {
+            let count = messages.len() - previous;
+            self.scroller.update(cx, |state, cx| state.append(count, cx));
+        } else if !messages.is_empty() {
+            self.scroller.update(cx, |state, cx| {
+                state.remeasure_items(start..messages.len(), cx);
+            });
+        }
     }
 
     fn sync_message_rows(&mut self, updates: &[Value], cx: &mut Context<Self>) -> bool {
