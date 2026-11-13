@@ -548,10 +548,12 @@ async fn run_command(
                     project,
                     archived,
                     items,
+                    running: service.running_sessions(),
                 },
             );
         }
         Command::LoadConversation { session, epoch } => {
+            service.set_active_session(session.clone(), epoch);
             let (messages, permissions, forms) = service.conversation(&session).await?;
             emit(
                 events,
@@ -565,34 +567,49 @@ async fn run_command(
             );
         }
         Command::Create { directory } => {
-            let session = service
-                .call(service.client.session_create(&SessionCreateInput {
-                    location: Some(Some(LocationPublicRef {
-                        directory: AbsolutePath(directory),
-                    })),
-                    ..Default::default()
-                }))
-                .await?;
+            let (_, task) = service.store.data.session_create(opencode_store::CreateSession {
+                location: Some(LocationPublicRef {
+                    directory: AbsolutePath(directory),
+                }),
+                ..Default::default()
+            });
+            let session = task
+                .await
+                .map_err(|error| anyhow::anyhow!(error.tui_message()))?;
             emit(events, Event::Created(session));
         }
         Command::Rename { session, title } => {
+            let id = SessionID(session.clone());
             service
                 .call(service.client.session_update(&SessionUpdateInput {
-                    session_id: SessionID(session.clone()),
+                    session_id: id.clone(),
                     title: Some(title),
                     ..Default::default()
                 }))
                 .await?;
+            service
+                .store
+                .data
+                .session_sync(&id, false)
+                .await
+                .map_err(|error| anyhow::anyhow!(error.tui_message()))?;
             emit(events, Event::Updated { session });
         }
         Command::Archive { session, archived } => {
+            let id = SessionID(session.clone());
             service
                 .call(service.client.session_update(&SessionUpdateInput {
-                    session_id: SessionID(session.clone()),
+                    session_id: id.clone(),
                     archived: Some(archived),
                     ..Default::default()
                 }))
                 .await?;
+            service
+                .store
+                .data
+                .session_sync(&id, false)
+                .await
+                .map_err(|error| anyhow::anyhow!(error.tui_message()))?;
             emit(events, Event::Updated { session });
         }
         Command::Send {
@@ -619,21 +636,31 @@ async fn run_command(
                     .await?;
             }
             service
-                .call(service.client.session_prompt(&SessionPromptInput {
+                .store
+                .data
+                .prompt(StorePrompt::from(SessionPromptInput {
                     session_id,
                     text,
                     ..Default::default()
                 }))
-                .await?;
+                .await
+                .map_err(|error| anyhow::anyhow!(error.tui_message()))?;
             emit(events, Event::Sent { session });
         }
         Command::Interrupt { session } => {
+            let id = SessionID(session.clone());
             service
                 .call(service.client.session_interrupt(&SessionInterruptInput {
-                    session_id: SessionID(session.clone()),
+                    session_id: id.clone(),
                     resume: None,
                 }))
                 .await?;
+            service
+                .store
+                .data
+                .session_sync(&id, false)
+                .await
+                .map_err(|error| anyhow::anyhow!(error.tui_message()))?;
             emit(events, Event::Interrupted { session });
         }
         Command::ReplyPermission {
@@ -642,14 +669,16 @@ async fn run_command(
             decision,
         } => {
             service
-                .call(service.client.permission_reply(&PermissionReplyInput {
+                .store
+                .data
+                .permission_reply(PermissionReplyInput {
                     session_id: SessionID(session),
-                    request_id: PermissionID(request.clone()),
+                    request_id: PermissionID(request),
                     decision: PermissionReply::from(decision.as_str()),
                     message: None,
-                }))
-                .await?;
-            emit(events, Event::PermissionReplied { request });
+                })
+                .await
+                .map_err(|error| anyhow::anyhow!(error.tui_message()))?;
         }
         Command::ReplyForm {
             session,
@@ -658,13 +687,18 @@ async fn run_command(
         } => {
             let answer: FormAnswer = serde_json::from_value(answer)?;
             service
-                .call(service.client.session_form_reply(&SessionFormReplyInput {
-                    session_id: session,
-                    form_id: FormID(form.clone()),
-                    answer,
-                }))
-                .await?;
-            emit(events, Event::FormReplied { form });
+                .store
+                .data
+                .form_reply(
+                    SessionFormReplyInput {
+                        session_id: session,
+                        form_id: FormID(form),
+                        answer,
+                    },
+                    None,
+                )
+                .await
+                .map_err(|error| anyhow::anyhow!(error.tui_message()))?;
         }
         Command::LoadPreview { directory, path } => {
             let content = service.file(&directory, &path).await?;
@@ -678,75 +712,149 @@ async fn run_command(
     Ok(())
 }
 
-fn spawn_stream(
-    client: Client,
+fn conversation_snapshot(
+    data: &StoreData,
+    session: &str,
+) -> (Vec<Value>, Vec<Value>, Vec<Value>) {
+    let id = SessionID(session.to_owned());
+    data.read(|state| {
+        let messages = state
+            .messages(&id)
+            .iter()
+            .map(|message| serde_json::to_value(message).unwrap_or(Value::Null))
+            .collect();
+        let permissions = state
+            .permissions(&id)
+            .unwrap_or_default()
+            .iter()
+            .map(|permission| serde_json::to_value(permission).unwrap_or(Value::Null))
+            .collect();
+        let forms = state
+            .forms(session, None)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|form| serde_json::to_value(&form.info).unwrap_or(Value::Null))
+            .collect();
+        (messages, permissions, forms)
+    })
+}
+
+fn sessions_snapshot(
+    data: &StoreData,
+    project: &str,
+    archived: bool,
+) -> (Vec<Session>, Vec<String>) {
+    data.read(|state| {
+        let sessions = state
+            .sessions()
+            .into_iter()
+            .filter(|session| {
+                session.project_id.0 == project
+                    && session.parent_id.is_none()
+                    && session.time.archived.is_some() == archived
+            })
+            .cloned()
+            .collect();
+        let running = state
+            .active_sessions()
+            .into_iter()
+            .map(|session| session.0.clone())
+            .collect();
+        (sessions, running)
+    })
+}
+
+fn spawn_store_watch(
+    store: Arc<StoreConnection>,
     generation: u64,
     valid: Arc<AtomicU64>,
     runtime: Handle,
     events: UiSender<Event>,
 ) {
     runtime.spawn(async move {
-        let mut connected_once = false;
-        while valid.load(Ordering::Acquire) == generation {
-            match tokio::time::timeout(
-                STREAM_CONNECT_TIMEOUT,
-                client.event_subscribe(&EventSubscribeInput::default()),
-            )
-            .await
-            {
-                Ok(Ok(response)) => {
-                    if connected_once {
-                        emit(&events, Event::StreamReconnected);
+        let mut revisions = store.data.subscribe();
+        let mut seen = store.data.revision();
+        let mut connection = store.connection.watch();
+        let mut last_status = connection.borrow().status;
+
+        loop {
+            tokio::select! {
+                changed = revisions.changed() => {
+                    if changed.is_err() || valid.load(Ordering::Acquire) != generation {
+                        break;
                     }
-                    connected_once = true;
-                    let stream = response.events(|| {});
-                    futures_util::pin_mut!(stream);
-                    loop {
-                        tokio::select! {
-                            _ = tokio::time::sleep(Duration::from_millis(500)) => {
-                                if valid.load(Ordering::Acquire) != generation {
-                                    break;
-                                }
-                            }
-                            item = stream.next() => {
-                                match item {
-                                    Some(Ok(event)) => {
-                                        let raw = serde_json::to_value(event).unwrap_or(Value::Null);
-                                        emit(&events, Event::Stream(raw));
-                                    }
-                                    Some(Err(error)) => {
-                                        emit(&events, Event::Error(error.to_string()));
-                                        break;
-                                    }
-                                    None => break,
-                                }
-                            }
+                    let (revision, changes) = store.data.changes_since(seen);
+                    seen = revision;
+                    if changes.is_empty() {
+                        continue;
+                    }
+                    let context = store.context.lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .clone();
+
+                    if changes.projects() {
+                        let projects = store.data.read(|state| {
+                            state.projects().into_iter().cloned().collect()
+                        });
+                        emit(&events, Event::Projects { projects });
+                    }
+
+                    if (changes.sessions() || !changes.status.is_empty())
+                        && let Some(project) = context.project
+                    {
+                        let (items, running) = sessions_snapshot(
+                            &store.data,
+                            &project,
+                            context.archived,
+                        );
+                        emit(&events, Event::Sessions {
+                            project,
+                            archived: context.archived,
+                            items,
+                            running,
+                        });
+                    }
+
+                    if let Some((session, epoch)) = context.session {
+                        let id = SessionID(session.clone());
+                        if changes.any_message(&id)
+                            || changes.permissions(&id)
+                            || changes.forms(&session)
+                            || changes.session(&id)
+                            || changes.status(&id)
+                            || changes.pending(&id)
+                        {
+                            let (messages, permissions, forms) =
+                                conversation_snapshot(&store.data, &session);
+                            emit(&events, Event::Conversation {
+                                session,
+                                epoch,
+                                messages,
+                                permissions,
+                                forms,
+                            });
                         }
                     }
-                    if valid.load(Ordering::Acquire) == generation {
-                        emit(&events, Event::StreamDisconnected);
-                    }
                 }
-                Ok(Err(error)) => {
-                    if valid.load(Ordering::Acquire) == generation {
-                        emit(
-                            &events,
-                            Event::Error(format!("Event stream: {}", error.tui_message())),
-                        );
-                        emit(&events, Event::StreamDisconnected);
+                changed = connection.changed() => {
+                    if changed.is_err() || valid.load(Ordering::Acquire) != generation {
+                        break;
                     }
-                }
-                Err(_) => {
-                    if valid.load(Ordering::Acquire) == generation {
-                        emit(&events, Event::Error("Event stream connection timed out".into()));
-                        emit(&events, Event::StreamDisconnected);
+                    let status = connection.borrow().status;
+                    if status != last_status {
+                        match status {
+                            opencode_api::events::Status::Connected => {
+                                emit(&events, Event::StreamReconnected);
+                            }
+                            opencode_api::events::Status::Connecting
+                            | opencode_api::events::Status::Reconnecting => {
+                                emit(&events, Event::StreamDisconnected);
+                            }
+                        }
+                        last_status = status;
                     }
                 }
             }
-            if valid.load(Ordering::Acquire) != generation {
-                break;
-            }
-            tokio::time::sleep(Duration::from_secs(3)).await;
         }
     });
 }
