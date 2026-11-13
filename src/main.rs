@@ -365,11 +365,11 @@ impl Zoc {
                     if self.data.current_session.as_ref() != Some(&session) {
                         self.data.select_session(session.clone());
                         self.rebuild_rows(cx);
+                        self.send_command(Command::LoadConversation {
+                            session,
+                            epoch: self.data.epoch,
+                        });
                     }
-                    self.send_command(Command::LoadConversation {
-                        session,
-                        epoch: self.data.epoch,
-                    });
                 } else {
                     // A selected session may have been archived, removed or moved.
                     // Never leave its old transcript shown under a different list.
