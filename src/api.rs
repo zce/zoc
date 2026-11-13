@@ -797,6 +797,15 @@ fn spawn_store_watch(
         let mut seen = store.data.revision();
         let mut connection = store.watch();
         let mut last_status = connection.borrow().status;
+        match last_status {
+            opencode_api::events::Status::Connected => {
+                emit(&events, Event::StreamReconnected);
+            }
+            opencode_api::events::Status::Connecting
+            | opencode_api::events::Status::Reconnecting => {
+                emit(&events, Event::StreamDisconnected);
+            }
+        }
 
         loop {
             tokio::select! {
