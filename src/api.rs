@@ -369,7 +369,7 @@ impl ServiceClient {
             StoreOptions {
                 directory,
                 initial_message_limit: Some(200),
-                omit_tool_file_data: true,
+                omit_tool_file_data: false,
             },
         );
         let store = Arc::new(StoreConnection {
