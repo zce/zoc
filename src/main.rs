@@ -327,10 +327,8 @@ impl Zoc {
                 self.data.projects = projects;
                 if self.data.current_project.as_ref().is_some_and(|current| {
                     !self.data.projects.iter().any(|project| project.id.as_str() == current)
-                }) {
-                    if let Some(id) = self.data.projects.first().map(|project| project.id.0.clone()) {
-                        self.switch_project(id, cx);
-                    }
+                }) && let Some(id) = self.data.projects.first().map(|project| project.id.0.clone()) {
+                    self.switch_project(id, cx);
                 }
             }
             Event::Sessions {
@@ -415,7 +413,7 @@ impl Zoc {
                 self.data.set_messages(&session, messages);
                 self.data.permissions.insert(session.clone(), permissions);
                 self.data.forms.insert(session, forms);
-                self.rebuild_rows(cx);
+                self.sync_rows(cx);
             }
             Event::Created(session) => {
                 let id = session.id.0.clone();
