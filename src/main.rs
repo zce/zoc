@@ -346,7 +346,7 @@ impl Zoc {
                             .prefs
                             .last_session
                             .as_ref()
-                            .filter(|id| self.data.sessions.iter().any(|s| &s.id == *id))
+                            .filter(|id| self.data.sessions.iter().any(|s| s.id.as_str() == id.as_str()))
                             .cloned()
                     });
                 if let Some(session) = target {
@@ -805,7 +805,7 @@ impl Zoc {
                     )
                     .when(!collapsed, |view| {
                         view.children(entries.into_iter().map(|session| {
-                            let id = session.id.clone();
+                            let id = session.id.0.clone();
                             let selected = self.data.current_session.as_ref() == Some(&id);
                             let title = session
                                 .title
