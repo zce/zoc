@@ -766,6 +766,97 @@ fn spawn_stream(
 mod tests {
     use super::*;
 
+    use std::{io::{BufRead as _, BufReader as TestReader, Write as _}, net::TcpListener};
+
+    // Deterministic HTTP fixture for client contract tests. It is never shipped
+    // with the application and cannot respond to production UI actions.
+    fn mock_api(responses: Vec<(&'static str, Value)>) -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let worker = thread::spawn(move || {
+            for (expected_path, body) in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut reader = TestReader::new(stream.try_clone().unwrap());
+                let mut first = String::new();
+                reader.read_line(&mut first).unwrap();
+                let request_target = first.split_whitespace().nth(1).unwrap_or("");
+                assert!(
+                    request_target.starts_with(expected_path),
+                    "expected {expected_path:?}, received {request_target:?}"
+                );
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" || line.is_empty() { break; }
+                }
+                let payload = body.to_string();
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+                    payload.len(), payload
+                );
+                stream.write_all(reply.as_bytes()).unwrap();
+            }
+        });
+        (url, worker)
+    }
+
+    #[test]
+    fn service_registration_preserves_auth_and_pid() {
+        let registration = json!({
+            "url":"http://127.0.0.1:4982",
+            "password":"registered-secret",
+            "pid": 4821,
+            "version":"2.2.6"
+        });
+        let config = parse_registration(&registration).unwrap();
+        assert_eq!(config.url, "http://127.0.0.1:4982");
+        assert_eq!(config.username, "opencode");
+        assert_eq!(config.password, "registered-secret");
+        assert_eq!(config.expected_pid, Some(4821));
+        assert!(parse_registration(&json!({"password":"unused"})).is_none());
+    }
+
+    #[test]
+    fn local_service_connects_and_lists_real_project_ids() {
+        let (url, worker) = mock_api(vec![
+            ("/api/info", json!({"pid":450,"version":"2.2.6"})),
+            ("/api/project", json!([
+                {"id":"prj_alpha","canonical":"/work/alpha","name":"Alpha"},
+                {"id":"prj_beta","canonical":"/work/beta","name":"Beta"}
+            ])),
+        ]);
+        let client = ServiceClient::connect(Connection {
+            url, username: "opencode".into(), password: "secret".into(),
+            expected_pid: Some(450),
+        }).unwrap();
+        let projects = client.projects().unwrap();
+        assert_eq!(projects.len(), 2);
+        assert_eq!(projects[1].id, "prj_beta");
+        assert_eq!(projects[1].canonical, "/work/beta");
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn session_cursors_do_not_repeat_first_page_filters() {
+        let make_session = |id: &str| json!({
+            "id":id,"projectID":"prj_1","location":{"directory":"/work/one"},
+            "time":{"created":1,"updated":3}
+        });
+        let (url, worker) = mock_api(vec![
+            ("/api/info", json!({"pid":1,"version":"2.2.6"})),
+            ("/api/session?project=prj_1&order=desc&parentID=null&limit=50&archived=false",
+                json!({"data":[make_session("ses_2")],"cursor":{"next":"opaque-next"}})),
+            ("/api/session?cursor=opaque-next",
+                json!({"data":[make_session("ses_1")],"cursor":{}})),
+        ]);
+        let client = ServiceClient::connect(Connection {
+            url, username: "opencode".into(), password:String::new(), expected_pid: None,
+        }).unwrap();
+        let sessions = client.sessions("prj_1", false).unwrap();
+        assert_eq!(sessions.iter().map(|s|s.id.as_str()).collect::<Vec<_>>(), vec!["ses_2","ses_1"]);
+        worker.join().unwrap();
+    }
+
     #[test]
     fn model_reference_keeps_variant() {
         let model = ModelRef {
