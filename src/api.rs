@@ -643,6 +643,7 @@ async fn run_command(
             agent,
         } => {
             let session_id = SessionID(session.clone());
+            let prepare_session = session_id.clone();
             let client = service.client.clone();
             let prepare = (model.is_some() || agent.is_some()).then(|| {
                 Box::new(move || -> opencode_store::inbox::Gate {
@@ -650,7 +651,7 @@ async fn run_command(
                         if let Some(agent) = agent {
                             client
                                 .session_switch_agent(&SessionSwitchAgentInput {
-                                    session_id: session_id.clone(),
+                                    session_id: prepare_session.clone(),
                                     agent: AgentID(agent),
                                 })
                                 .await
