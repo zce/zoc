@@ -292,7 +292,22 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use opencode_api::generated::{ProjectID, SessionID, SessionInfoTime};
+    #[test]
+    fn message_updates_replace_only_the_matching_transcript_rows() {
+        let mut state = AppState::default();
+        state.messages.insert(
+            "ses_1".into(),
+            vec![json!({"id":"msg_1","text":"old"}), json!({"id":"msg_2","text":"keep"})],
+        );
+
+        assert!(state.update_messages("ses_1", vec![json!({"id":"msg_1","text":"new"})]));
+        assert_eq!(state.messages["ses_1"][0]["text"], "new");
+        assert_eq!(state.messages["ses_1"][1]["text"], "keep");
+        assert!(!state.update_messages("ses_1", vec![json!({"id":"missing","text":"lost"})]));
+    }
+
     #[test]
     fn working_order_is_run_start() {
         let mut state = AppState::default();
