@@ -423,11 +423,24 @@ impl Zoc {
                         old.get("id").and_then(Value::as_str)
                             == new.get("id").and_then(Value::as_str)
                     });
+                let changed_existing: Vec<_> = if append_only {
+                    previous
+                        .iter()
+                        .zip(&messages)
+                        .filter(|(old, new)| old != new)
+                        .map(|(_, new)| new.clone())
+                        .collect()
+                } else {
+                    Vec::new()
+                };
                 self.data.set_messages(&session, messages);
                 self.data.permissions.insert(session.clone(), permissions);
                 self.data.forms.insert(session, forms);
                 if append_only {
                     self.sync_appended_rows(cx);
+                    if !changed_existing.is_empty() && !self.sync_message_rows(&changed_existing, cx) {
+                        self.rebuild_rows(cx);
+                    }
                 } else {
                     self.rebuild_rows(cx);
                 }
