@@ -1,4 +1,5 @@
 use crate::api::{Agent, Connection, Model, ModelRef, Project, Session};
+use opencode_api::generated::{ProjectID, SessionID, SessionInfoTime};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -32,7 +33,7 @@ pub struct Preferences {
     pub last_project: Option<String>,
     pub last_session: Option<String>,
     #[serde(default)]
-    pub read: HashMap<String, u64>,
+    pub read: HashMap<String, f64>,
     #[serde(default)]
     pub drafts: HashMap<String, String>,
 }
@@ -132,13 +133,13 @@ impl AppState {
     pub fn active_session(&self) -> Option<&Session> {
         self.sessions
             .iter()
-            .find(|s| Some(&s.id) == self.current_session.as_ref())
+            .find(|s| Some(&s.id.0) == self.current_session.as_ref())
     }
 
     pub fn project_directory(&self) -> Option<&str> {
         self.projects
             .iter()
-            .find(|p| Some(&p.id) == self.current_project.as_ref())
+            .find(|p| Some(&p.id.0) == self.current_project.as_ref())
             .map(|p| p.canonical.as_str())
     }
 
@@ -151,7 +152,7 @@ impl AppState {
     pub fn classify(&self, session: &Session) -> InboxGroup {
         if self
             .permissions
-            .get(&session.id)
+            .get(&session.id.0)
             .is_some_and(|items| !items.is_empty())
             || self
                 .forms
@@ -163,7 +164,7 @@ impl AppState {
         if session
             .time
             .busy
-            .is_some_and(|busy| busy > session.time.idle.unwrap_or(0))
+            .is_some_and(|busy| busy > session.time.idle.unwrap_or(0.0))
         {
             return InboxGroup::Working;
         }
@@ -172,9 +173,10 @@ impl AppState {
             .read
             .get(&session.id)
             .copied()
-            .unwrap_or(session.time.viewed.unwrap_or(0));
+            .unwrap_or(session.time.viewed.unwrap_or(0.0));
         if session.time.idle.is_some_and(|idle| idle > viewed)
-            || (session.outcome.as_deref() == Some("failed") && session.time.updated > viewed)
+            || (session.outcome.as_ref().is_some_and(|outcome| outcome.as_str() == "failed")
+                && session.time.updated > viewed)
         {
             return InboxGroup::Unread;
         }
@@ -193,16 +195,22 @@ impl AppState {
                         .unwrap_or("")
                         .to_lowercase()
                         .contains(&filter.to_lowercase())
-                    || s.id.to_lowercase().contains(&filter.to_lowercase())
+                    || s.id.as_str().to_lowercase().contains(&filter.to_lowercase())
             })
             .cloned()
             .collect();
-        list.sort_by_key(|s| {
-            std::cmp::Reverse(if group == InboxGroup::Working {
-                s.time.busy.unwrap_or(s.time.created)
+        list.sort_by(|a, b| {
+            let a_time = if group == InboxGroup::Working {
+                a.time.busy.unwrap_or(a.time.created)
             } else {
-                s.time.updated.max(s.time.created)
-            })
+                a.time.updated.max(a.time.created)
+            };
+            let b_time = if group == InboxGroup::Working {
+                b.time.busy.unwrap_or(b.time.created)
+            } else {
+                b.time.updated.max(b.time.created)
+            };
+            b_time.total_cmp(&a_time)
         });
         list
     }
@@ -216,7 +224,11 @@ impl AppState {
         self.epoch = self.epoch.wrapping_add(1);
         if let Some((idle, model, agent)) = self
             .active_session()
-            .map(|entry| (entry.time.idle, entry.model.clone(), entry.agent.clone()))
+            .map(|entry| (
+                entry.time.idle,
+                entry.model.clone(),
+                entry.agent.as_ref().map(|agent| agent.0.clone()),
+            ))
         {
             if let Some(idle) = idle {
                 self.prefs.read.insert(session.clone(), idle);
@@ -393,8 +405,8 @@ impl AppState {
                 StreamChange::Requests
             }
             "session.execution.started" => {
-                if let Some(s) = self.sessions.iter_mut().find(|s| s.id == session) {
-                    s.time.busy = Some(data["started"].as_u64().unwrap_or(s.time.updated + 1));
+                if let Some(s) = self.sessions.iter_mut().find(|s| s.id.0 == session) {
+                    s.time.busy = Some(data["started"].as_f64().unwrap_or(s.time.updated + 1.0));
                 }
                 StreamChange::Session
             }
@@ -454,16 +466,18 @@ mod tests {
         let mut state = AppState::default();
         for (id, busy, updated) in [("a", 100, 999), ("b", 200, 201)] {
             state.sessions.push(Session {
-                id: id.into(),
-                time: crate::api::Times {
-                    busy: Some(busy),
-                    updated,
+                id: SessionID(id.into()),
+                project_id: ProjectID::default(),
+                time: SessionInfoTime {
+                    created: 1.0,
+                    busy: Some(busy as f64),
+                    updated: updated as f64,
                     ..Default::default()
                 },
                 ..Default::default()
             });
         }
-        assert_eq!(state.sorted_inbox(InboxGroup::Working, "")[0].id, "b");
+        assert_eq!(state.sorted_inbox(InboxGroup::Working, "")[0].id.as_str(), "b");
     }
     #[test]
     fn incremental_text_deduplicates_and_finalizes() {
