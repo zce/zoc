@@ -4,7 +4,7 @@ mod state;
 use api::{Command, Event, ModelRef, model_display};
 use gpui_kit::base::{Selectable as _, StyledExt as _};
 use gpui_kit::component::{
-    ActiveTheme, Sizable as _,
+    ActiveTheme, Sizable as _, TitleBar,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputState, Textarea, TextareaState},
@@ -1838,27 +1838,28 @@ impl Render for Zoc {
             .on_action(cx.listener(Self::on_focus_search))
             .on_action(cx.listener(Self::on_toggle_preview))
             .child(
-                h_flex()
-                    .h(px(46.))
-                    .px_4()
-                    .gap_3()
-                    .items_center()
-                    .border_b_1()
-                    .border_color(border)
-                    .child(div().font_bold().child("ZOC"))
-                    .child(div().text_xs().text_color(muted).child(status))
-                    .child(div().flex_1())
-                    .child(self.render_projects(cx))
-                    .child(
-                        Button::new("connection-settings")
-                            .small()
-                            .ghost()
-                            .label("Connection")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.show_connection = !this.show_connection;
-                                cx.notify();
-                            })),
-                    ),
+                TitleBar::new().child(
+                    h_flex()
+                        .h_full()
+                        .w_full()
+                        .items_center()
+                        .gap_3()
+                        .pr_2()
+                        .child(div().font_semibold().child("ZOC"))
+                        .child(div().text_xs().text_color(muted).child(status))
+                        .child(div().flex_1())
+                        .child(self.render_projects(cx))
+                        .child(
+                            Button::new("connection-settings")
+                                .small()
+                                .ghost()
+                                .label("Connection")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.show_connection = !this.show_connection;
+                                    cx.notify();
+                                })),
+                        ),
+                ),
             )
             .when(self.show_connection, |view| {
                 view.child(self.render_connection(cx))
@@ -1917,7 +1918,7 @@ fn main() {
             gpui_kit::open_window(
                 WindowOptions {
                     window_bounds: Some(bounds),
-                    ..Default::default()
+                    ..TitleBar::window_options()
                 },
                 cx,
                 |window, cx| cx.new(|cx| Zoc::new(window, cx)),
