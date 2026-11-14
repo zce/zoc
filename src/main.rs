@@ -1918,6 +1918,8 @@ fn main() {
             gpui_kit::open_window(
                 WindowOptions {
                     window_bounds: Some(bounds),
+                    #[cfg(target_os = "linux")]
+                    window_decorations: Some(WindowDecorations::Client),
                     ..TitleBar::window_options()
                 },
                 cx,
