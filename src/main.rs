@@ -16,7 +16,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use serde_json::Value;
-use state::{AppState, InboxGroup, StreamChange};
+use state::{AppState, InboxGroup};
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
@@ -316,10 +316,32 @@ impl Zoc {
                     .prefs
                     .last_project
                     .as_ref()
-                    .filter(|id| self.data.projects.iter().any(|p| p.id.as_str() == id.as_str()))
+                    .filter(|id| {
+                        self.data
+                            .projects
+                            .iter()
+                            .any(|p| p.id.as_str() == id.as_str())
+                    })
                     .cloned()
                     .or_else(|| self.data.projects.first().map(|p| p.id.0.clone()));
                 if let Some(id) = selected {
+                    self.switch_project(id, cx);
+                }
+            }
+            Event::Projects { projects } => {
+                self.data.projects = projects;
+                if self.data.current_project.as_ref().is_some_and(|current| {
+                    !self
+                        .data
+                        .projects
+                        .iter()
+                        .any(|project| project.id.as_str() == current)
+                }) && let Some(id) = self
+                    .data
+                    .projects
+                    .first()
+                    .map(|project| project.id.0.clone())
+                {
                     self.switch_project(id, cx);
                 }
             }
@@ -327,6 +349,7 @@ impl Zoc {
                 project,
                 archived,
                 items,
+                running,
             } => {
                 if self.data.current_project.as_deref() != Some(project.as_str()) {
                     return;
@@ -335,29 +358,49 @@ impl Zoc {
                     return;
                 }
                 self.data.sessions = items;
+                self.data.running = running.into_iter().collect();
+                if let Some(session) = self.data.current_session.as_deref().and_then(|id| {
+                    self.data
+                        .sessions
+                        .iter()
+                        .find(|item| item.id.as_str() == id)
+                }) {
+                    self.data.selected_model = session.model.clone();
+                    self.data.selected_agent = session.agent.as_ref().map(|agent| agent.0.clone());
+                }
                 let target = self
                     .data
                     .current_session
                     .as_ref()
-                    .filter(|id| self.data.sessions.iter().any(|s| s.id.as_str() == id.as_str()))
+                    .filter(|id| {
+                        self.data
+                            .sessions
+                            .iter()
+                            .any(|s| s.id.as_str() == id.as_str())
+                    })
                     .cloned()
                     .or_else(|| {
                         self.data
                             .prefs
                             .last_session
                             .as_ref()
-                            .filter(|id| self.data.sessions.iter().any(|s| s.id.as_str() == id.as_str()))
+                            .filter(|id| {
+                                self.data
+                                    .sessions
+                                    .iter()
+                                    .any(|s| s.id.as_str() == id.as_str())
+                            })
                             .cloned()
                     });
                 if let Some(session) = target {
                     if self.data.current_session.as_ref() != Some(&session) {
                         self.data.select_session(session.clone());
                         self.rebuild_rows(cx);
+                        self.send_command(Command::LoadConversation {
+                            session,
+                            epoch: self.data.epoch,
+                        });
                     }
-                    self.send_command(Command::LoadConversation {
-                        session,
-                        epoch: self.data.epoch,
-                    });
                 } else {
                     // A selected session may have been archived, removed or moved.
                     // Never leave its old transcript shown under a different list.
@@ -400,14 +443,76 @@ impl Zoc {
                 {
                     return;
                 }
+                let previous = self.data.active_messages();
+                let append_only = previous.len() <= messages.len()
+                    && self.rows.borrow().len() == previous.len()
+                    && previous.iter().zip(&messages).all(|(old, new)| {
+                        old.get("id").and_then(Value::as_str)
+                            == new.get("id").and_then(Value::as_str)
+                    });
+                let changed_existing: Vec<_> = if append_only {
+                    previous
+                        .iter()
+                        .zip(&messages)
+                        .filter(|(old, new)| old != new)
+                        .map(|(_, new)| new.clone())
+                        .collect()
+                } else {
+                    Vec::new()
+                };
                 self.data.set_messages(&session, messages);
                 self.data.permissions.insert(session.clone(), permissions);
                 self.data.forms.insert(session, forms);
-                self.rebuild_rows(cx);
+                if append_only {
+                    self.sync_appended_rows(cx);
+                    if !changed_existing.is_empty()
+                        && !self.sync_message_rows(&changed_existing, cx)
+                    {
+                        self.rebuild_rows(cx);
+                    }
+                } else {
+                    self.rebuild_rows(cx);
+                }
+            }
+            Event::MessageUpdates {
+                session,
+                epoch,
+                items,
+            } => {
+                if self.data.current_session.as_deref() != Some(&session)
+                    || self.data.epoch != epoch
+                {
+                    return;
+                }
+                if !self.data.update_messages(&session, items.clone())
+                    || !self.sync_message_rows(&items, cx)
+                {
+                    self.send_command(Command::LoadConversation {
+                        session,
+                        epoch: self.data.epoch,
+                    });
+                }
+            }
+            Event::Approvals {
+                session,
+                epoch,
+                permissions,
+                forms,
+            } => {
+                if self.data.current_session.as_deref() != Some(&session)
+                    || self.data.epoch != epoch
+                {
+                    return;
+                }
+                self.data.permissions.insert(session.clone(), permissions);
+                self.data.forms.insert(session, forms);
             }
             Event::Created(session) => {
                 let id = session.id.0.clone();
-                self.data.sessions.insert(0, session);
+                self.data
+                    .sessions
+                    .retain(|existing| existing.id.as_str() != id);
+                self.data.sessions.insert(0, *session);
                 self.data.select_session(id.clone());
                 self.rebuild_rows(cx);
                 self.send_command(Command::LoadConversation {
@@ -442,16 +547,6 @@ impl Zoc {
                 });
                 self.refresh_sessions();
             }
-            Event::PermissionReplied { request } => {
-                for permissions in self.data.permissions.values_mut() {
-                    permissions.retain(|p| p["id"] != request);
-                }
-            }
-            Event::FormReplied { form } => {
-                for forms in self.data.forms.values_mut() {
-                    forms.retain(|f| f["id"] != form);
-                }
-            }
             Event::Preview { path, content } => {
                 let formatted = if path.ends_with(".md") || path.ends_with(".mdx") {
                     content.clone()
@@ -473,41 +568,6 @@ impl Zoc {
                     && let Some(path) = file["file"].as_str().map(str::to_owned)
                 {
                     self.open_diff(path, cx);
-                }
-            }
-            Event::Stream(raw) => {
-                if !self.data.connected {
-                    return;
-                }
-                if raw["type"] == "server.connected" {
-                    self.data.stream_connected = true;
-                }
-                let kind = raw["type"].as_str().unwrap_or("");
-                let change = self.data.apply_stream(&raw);
-                match change {
-                    StreamChange::Message(session) => {
-                        if self.data.current_session.as_deref() == Some(&session) {
-                            self.sync_rows(cx);
-                        }
-                    }
-                    StreamChange::Session => {
-                        if matches!(
-                            kind,
-                            "session.execution.succeeded"
-                                | "session.execution.failed"
-                                | "session.execution.interrupted"
-                                | "session.deleted"
-                        ) {
-                            self.refresh_sessions();
-                            if let Some(session) = self.data.current_session.clone() {
-                                self.send_command(Command::LoadConversation {
-                                    session,
-                                    epoch: self.data.epoch,
-                                });
-                            }
-                        }
-                    }
-                    _ => {}
                 }
             }
             Event::StreamDisconnected => {
@@ -655,14 +715,13 @@ impl Zoc {
             .update(cx, |state, cx| state.reset(length, cx));
     }
 
-    fn sync_rows(&mut self, cx: &mut Context<Self>) {
+    fn sync_appended_rows(&mut self, cx: &mut Context<Self>) {
         let messages = self.data.active_messages().to_vec();
         let previous = self.rows.borrow().len();
         if messages.len() < previous {
             self.rebuild_rows(cx);
             return;
         }
-        // Only the newest assistant row normally changes during streaming.
         let start = previous.saturating_sub(1);
         for index in start..messages.len() {
             let row = self.row_from_value(&messages[index], cx);
@@ -675,14 +734,53 @@ impl Zoc {
         }
         if messages.len() > previous {
             let count = messages.len() - previous;
-            self.scroller.update(cx, |state, cx| {
-                state.append(count, cx);
-            });
+            self.scroller
+                .update(cx, |state, cx| state.append(count, cx));
         } else if !messages.is_empty() {
             self.scroller.update(cx, |state, cx| {
                 state.remeasure_items(start..messages.len(), cx);
             });
         }
+    }
+
+    fn sync_message_rows(&mut self, updates: &[Value], cx: &mut Context<Self>) -> bool {
+        let indices = {
+            let messages = self.data.active_messages();
+            if self.rows.borrow().len() != messages.len() {
+                return false;
+            }
+            updates
+                .iter()
+                .map(|update| {
+                    let id = update.get("id")?.as_str()?;
+                    messages
+                        .iter()
+                        .position(|message| message.get("id").and_then(Value::as_str) == Some(id))
+                })
+                .collect::<Option<Vec<_>>>()
+        };
+        let Some(indices) = indices else {
+            return false;
+        };
+        let rows: Vec<_> = updates
+            .iter()
+            .map(|message| self.row_from_value(message, cx))
+            .collect();
+        {
+            let mut current = self.rows.borrow_mut();
+            for (index, row) in indices.iter().copied().zip(rows) {
+                let Some(slot) = current.get_mut(index) else {
+                    return false;
+                };
+                *slot = row;
+            }
+        }
+        for index in indices {
+            self.scroller.update(cx, |state, cx| {
+                state.remeasure_items(index..index + 1, cx);
+            });
+        }
+        true
     }
 
     fn open_file(&mut self, path: String) {

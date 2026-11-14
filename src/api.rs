@@ -1,15 +1,14 @@
 use anyhow::{Context as _, ensure};
-use futures_util::StreamExt;
 use opencode_api::{
     client::{Auth, Client},
     error::Error as ApiError,
     generated::*,
     transport::{Reqwest, Transport},
 };
-use opencode_local::{
-    channel::Channels,
-    paths::Paths,
-    registration::Files,
+use opencode_local::{channel::Channels, paths::Paths, registration::Files};
+use opencode_store::{
+    Data as StoreData, Options as StoreOptions, connection as store_connection,
+    inbox::Prompt as StorePrompt, messages::LoadMore,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -18,26 +17,24 @@ use std::{
     future::Future,
     net::IpAddr,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicU64, Ordering},
         mpsc::{self, Sender},
     },
     thread,
     time::Duration,
 };
-use tokio::runtime::{Builder, Handle};
+use tokio::{
+    runtime::{Builder, Handle},
+    task::JoinHandle,
+};
 
 pub use opencode_api::generated::{
-    AgentInfo as Agent,
-    ModelInfo as Model,
-    ModelRef,
-    Project,
-    SessionInfo as Session,
+    AgentInfo as Agent, ModelInfo as Model, ModelRef, Project, SessionInfo as Session,
 };
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(25);
-const STREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Connection {
@@ -143,10 +140,14 @@ pub enum Event {
         info: Value,
         projects: Vec<Project>,
     },
+    Projects {
+        projects: Vec<Project>,
+    },
     Sessions {
         project: String,
         archived: bool,
         items: Vec<Session>,
+        running: Vec<String>,
     },
     Conversation {
         session: String,
@@ -155,12 +156,23 @@ pub enum Event {
         permissions: Vec<Value>,
         forms: Vec<Value>,
     },
+    MessageUpdates {
+        session: String,
+        epoch: u64,
+        items: Vec<Value>,
+    },
+    Approvals {
+        session: String,
+        epoch: u64,
+        permissions: Vec<Value>,
+        forms: Vec<Value>,
+    },
     Metadata {
         directory: String,
         models: Vec<Model>,
         agents: Vec<Agent>,
     },
-    Created(Session),
+    Created(Box<Session>),
     Updated {
         session: String,
     },
@@ -170,12 +182,6 @@ pub enum Event {
     Interrupted {
         session: String,
     },
-    PermissionReplied {
-        request: String,
-    },
-    FormReplied {
-        form: String,
-    },
     Preview {
         path: String,
         content: String,
@@ -184,7 +190,6 @@ pub enum Event {
         items: Vec<Value>,
         diffs: Vec<Value>,
     },
-    Stream(Value),
     StreamDisconnected,
     StreamReconnected,
     Error(String),
@@ -201,7 +206,10 @@ pub fn spawn(events: UiSender<Event>) -> Sender<Command> {
         {
             Ok(runtime) => runtime,
             Err(error) => {
-                emit(&events, Event::Error(format!("Cannot start API runtime: {error}")));
+                emit(
+                    &events,
+                    Event::Error(format!("Cannot start API runtime: {error}")),
+                );
                 return;
             }
         };
@@ -234,9 +242,10 @@ pub fn spawn(events: UiSender<Event>) -> Sender<Command> {
                                 continue;
                             }
                         }
+                        service.store.start();
                         let generation = sequence.fetch_add(1, Ordering::AcqRel) + 1;
-                        spawn_stream(
-                            service.client.clone(),
+                        spawn_store_watch(
+                            service.store.clone(),
                             generation,
                             sequence.clone(),
                             runtime.handle().clone(),
@@ -272,10 +281,50 @@ fn emit(sender: &UiSender<Event>, event: Event) {
     let _ = sender.try_send(event);
 }
 
+#[derive(Clone, Default)]
+struct WatchContext {
+    project: Option<String>,
+    archived: bool,
+    session: Option<(String, u64)>,
+}
+
+struct StoreConnection {
+    data: StoreData,
+    connection: Mutex<Option<opencode_api::events::Connection>>,
+    _task: Mutex<Option<JoinHandle<()>>>,
+    context: Arc<Mutex<WatchContext>>,
+}
+
+impl StoreConnection {
+    fn start(&self) {
+        let mut connection = self
+            .connection
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if connection.is_some() {
+            return;
+        }
+        let (stream, task) =
+            store_connection::connect(&self.data, opencode_api::events::Options::default());
+        *connection = Some(stream);
+        *self._task.lock().unwrap_or_else(|error| error.into_inner()) = Some(task);
+    }
+
+    fn watch(&self) -> tokio::sync::watch::Receiver<opencode_api::events::State> {
+        self.connection
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .expect("store connection started before watching")
+            .watch()
+    }
+}
+
 #[derive(Clone)]
 struct ServiceClient {
     client: Client,
     info: ServerInfo,
+    store: Arc<StoreConnection>,
 }
 
 impl ServiceClient {
@@ -295,8 +344,8 @@ impl ServiceClient {
 
         // Keep loopback traffic out of a developer's HTTP proxy. Remote endpoints continue to
         // follow the same proxy environment as the official OpenCode HTTP client.
-        let mut builder = opencode_api::transport::client_builder()
-            .connect_timeout(CONNECT_TIMEOUT);
+        let mut builder =
+            opencode_api::transport::client_builder().connect_timeout(CONNECT_TIMEOUT);
         if local {
             builder = builder.no_proxy();
         }
@@ -319,7 +368,29 @@ impl ServiceClient {
                 info.pid
             );
         }
-        Ok(Self { client, info })
+
+        let directory = std::env::current_dir()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let data = StoreData::new(
+            client.clone(),
+            StoreOptions {
+                directory,
+                initial_message_limit: Some(200),
+                omit_tool_file_data: false,
+            },
+        );
+        let store = Arc::new(StoreConnection {
+            data,
+            connection: Mutex::new(None),
+            _task: Mutex::new(None),
+            context: Arc::new(Mutex::new(WatchContext::default())),
+        });
+        Ok(Self {
+            client,
+            info,
+            store,
+        })
     }
 
     async fn call<T>(
@@ -333,15 +404,27 @@ impl ServiceClient {
     }
 
     async fn projects(&self) -> anyhow::Result<Vec<Project>> {
-        self.call(self.client.project_list(&ProjectListInput::default()))
+        self.store
+            .data
+            .project_sync()
             .await
+            .map_err(|error| anyhow::anyhow!(error.tui_message()))?;
+        Ok(self
+            .store
+            .data
+            .read(|state| state.projects().into_iter().cloned().collect()))
     }
 
-    async fn sessions(
-        &self,
-        project: &str,
-        archived: bool,
-    ) -> anyhow::Result<Vec<Session>> {
+    async fn sessions(&self, project: &str, archived: bool) -> anyhow::Result<Vec<Session>> {
+        {
+            let mut context = self
+                .store
+                .context
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            context.project = Some(project.to_owned());
+            context.archived = archived;
+        }
         let mut result = Vec::new();
         let mut cursor = None::<SessionsCursor>;
         for _ in 0..20 {
@@ -355,12 +438,14 @@ impl ServiceClient {
                 ..Default::default()
             };
             let response = self.call(self.client.session_list(&input)).await?;
-            result.extend(
-                response
-                    .data
-                    .into_iter()
-                    .filter(|session| session.project_id.0 == project && session.parent_id.is_none()),
-            );
+            for session in response
+                .data
+                .into_iter()
+                .filter(|session| session.project_id.0 == project && session.parent_id.is_none())
+            {
+                self.store.data.remember(session.clone());
+                result.push(session);
+            }
             cursor = response.cursor.next.flatten();
             if cursor.is_none() {
                 break;
@@ -369,59 +454,50 @@ impl ServiceClient {
         Ok(result)
     }
 
-    async fn conversation(
-        &self,
-        id: &str,
-    ) -> anyhow::Result<(Vec<Value>, Vec<Value>, Vec<Value>)> {
+    async fn conversation(&self, id: &str) -> anyhow::Result<(Vec<Value>, Vec<Value>, Vec<Value>)> {
         let session_id = SessionID(id.to_owned());
-        let mut messages = Vec::new();
-        let mut cursor = None::<String>;
-        for _ in 0..100 {
-            let input = MessageListInput {
-                session_id: session_id.clone(),
-                limit: Some(200),
-                order: Some(MessageListInputOrder::Asc),
-                cursor: cursor.clone(),
-                ..Default::default()
-            };
-            let response = self.call(self.client.message_list(&input)).await?;
-            messages.extend(
-                response
-                    .data
-                    .into_iter()
-                    .map(|message| serde_json::to_value(message).unwrap_or(Value::Null)),
-            );
-            cursor = response.cursor.next.flatten();
-            if cursor.is_none() {
-                break;
-            }
-        }
+        self.store
+            .data
+            .message_sync(&session_id)
+            .await
+            .map_err(|error| anyhow::anyhow!(error.tui_message()))?;
+        self.store
+            .data
+            .message_load_more(
+                &session_id,
+                LoadMore {
+                    all: true,
+                    cancel: None,
+                },
+            )
+            .await
+            .map_err(|error| anyhow::anyhow!(error.tui_message()))?;
+        let _ = self.store.data.permission_sync(&session_id).await;
+        let _ = self.store.data.form_sync(id, None).await;
 
-        let permissions = self
-            .call(self.client.permission_list(&PermissionListInput {
-                session_id: session_id.clone(),
-            }))
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .map(|permission| serde_json::to_value(permission).unwrap_or(Value::Null))
-            .collect();
-        let forms = self
-            .call(self.client.session_form_list(&SessionFormListInput {
-                session_id: id.to_owned(),
-            }))
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .map(|form| serde_json::to_value(form).unwrap_or(Value::Null))
-            .collect();
-        Ok((messages, permissions, forms))
+        Ok(conversation_snapshot(&self.store.data, id))
     }
 
-    async fn metadata(
-        &self,
-        directory: &str,
-    ) -> anyhow::Result<(Vec<Model>, Vec<Agent>)> {
+    fn running_sessions(&self) -> Vec<String> {
+        self.store.data.read(|state| {
+            state
+                .active_sessions()
+                .into_iter()
+                .map(|session| session.0.clone())
+                .collect()
+        })
+    }
+
+    fn set_active_session(&self, session: String, epoch: u64) {
+        let mut context = self
+            .store
+            .context
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        context.session = Some((session, epoch));
+    }
+
+    async fn metadata(&self, directory: &str) -> anyhow::Result<(Vec<Model>, Vec<Agent>)> {
         let location = Some(LocationQueryInput {
             directory: Some(directory.to_owned()),
         });
@@ -508,10 +584,12 @@ async fn run_command(
                     project,
                     archived,
                     items,
+                    running: service.running_sessions(),
                 },
             );
         }
         Command::LoadConversation { session, epoch } => {
+            service.set_active_session(session.clone(), epoch);
             let (messages, permissions, forms) = service.conversation(&session).await?;
             emit(
                 events,
@@ -525,34 +603,52 @@ async fn run_command(
             );
         }
         Command::Create { directory } => {
-            let session = service
-                .call(service.client.session_create(&SessionCreateInput {
-                    location: Some(Some(LocationPublicRef {
+            let (_, task) = service
+                .store
+                .data
+                .session_create(opencode_store::CreateSession {
+                    location: Some(LocationPublicRef {
                         directory: AbsolutePath(directory),
-                    })),
+                    }),
                     ..Default::default()
-                }))
-                .await?;
-            emit(events, Event::Created(session));
+                });
+            let session = task
+                .await
+                .map_err(|error| anyhow::anyhow!(error.tui_message()))?;
+            emit(events, Event::Created(Box::new(session)));
         }
         Command::Rename { session, title } => {
+            let id = SessionID(session.clone());
             service
                 .call(service.client.session_update(&SessionUpdateInput {
-                    session_id: SessionID(session.clone()),
+                    session_id: id.clone(),
                     title: Some(title),
                     ..Default::default()
                 }))
                 .await?;
+            service
+                .store
+                .data
+                .session_sync(&id, false)
+                .await
+                .map_err(|error| anyhow::anyhow!(error.tui_message()))?;
             emit(events, Event::Updated { session });
         }
         Command::Archive { session, archived } => {
+            let id = SessionID(session.clone());
             service
                 .call(service.client.session_update(&SessionUpdateInput {
-                    session_id: SessionID(session.clone()),
+                    session_id: id.clone(),
                     archived: Some(archived),
                     ..Default::default()
                 }))
                 .await?;
+            service
+                .store
+                .data
+                .session_sync(&id, false)
+                .await
+                .map_err(|error| anyhow::anyhow!(error.tui_message()))?;
             emit(events, Event::Updated { session });
         }
         Command::Send {
@@ -562,38 +658,69 @@ async fn run_command(
             agent,
         } => {
             let session_id = SessionID(session.clone());
-            if let Some(model) = model {
-                service
-                    .call(service.client.session_switch_model(&SessionSwitchModelInput {
-                        session_id: session_id.clone(),
-                        model,
-                    }))
-                    .await?;
-            }
-            if let Some(agent) = agent {
-                service
-                    .call(service.client.session_switch_agent(&SessionSwitchAgentInput {
-                        session_id: session_id.clone(),
-                        agent: AgentID(agent),
-                    }))
-                    .await?;
-            }
+            let prepare_session = session_id.clone();
+            let client = service.client.clone();
+            let prepare = (model.is_some() || agent.is_some()).then(|| {
+                Box::new(move || -> opencode_store::inbox::Gate {
+                    Box::pin(async move {
+                        if let Some(agent) = agent {
+                            client
+                                .session_switch_agent(&SessionSwitchAgentInput {
+                                    session_id: prepare_session.clone(),
+                                    agent: AgentID(agent),
+                                })
+                                .await
+                                .map_err(opencode_store::Error::new)?;
+                        }
+                        if let Some(model) = model {
+                            client
+                                .session_switch_model(&SessionSwitchModelInput {
+                                    session_id: prepare_session,
+                                    model,
+                                })
+                                .await
+                                .map_err(|error| {
+                                    opencode_store::Error::new(
+                                        opencode_api::error::Error::Transport(format!(
+                                            "Failed to switch model: {error}"
+                                        )),
+                                    )
+                                })?;
+                        }
+                        Ok(())
+                    })
+                }) as Box<dyn FnOnce() -> opencode_store::inbox::Gate + Send>
+            });
             service
-                .call(service.client.session_prompt(&SessionPromptInput {
-                    session_id,
-                    text,
-                    ..Default::default()
-                }))
-                .await?;
+                .store
+                .data
+                .prompt(StorePrompt {
+                    input: SessionPromptInput {
+                        session_id,
+                        text,
+                        ..Default::default()
+                    },
+                    gate: None,
+                    prepare,
+                })
+                .await
+                .map_err(|error| anyhow::anyhow!(error.tui_message()))?;
             emit(events, Event::Sent { session });
         }
         Command::Interrupt { session } => {
+            let id = SessionID(session.clone());
             service
                 .call(service.client.session_interrupt(&SessionInterruptInput {
-                    session_id: SessionID(session.clone()),
+                    session_id: id.clone(),
                     resume: None,
                 }))
                 .await?;
+            service
+                .store
+                .data
+                .session_sync(&id, false)
+                .await
+                .map_err(|error| anyhow::anyhow!(error.tui_message()))?;
             emit(events, Event::Interrupted { session });
         }
         Command::ReplyPermission {
@@ -602,14 +729,16 @@ async fn run_command(
             decision,
         } => {
             service
-                .call(service.client.permission_reply(&PermissionReplyInput {
+                .store
+                .data
+                .permission_reply(PermissionReplyInput {
                     session_id: SessionID(session),
-                    request_id: PermissionID(request.clone()),
+                    request_id: PermissionID(request),
                     decision: PermissionReply::from(decision.as_str()),
                     message: None,
-                }))
-                .await?;
-            emit(events, Event::PermissionReplied { request });
+                })
+                .await
+                .map_err(|error| anyhow::anyhow!(error.tui_message()))?;
         }
         Command::ReplyForm {
             session,
@@ -618,13 +747,18 @@ async fn run_command(
         } => {
             let answer: FormAnswer = serde_json::from_value(answer)?;
             service
-                .call(service.client.session_form_reply(&SessionFormReplyInput {
-                    session_id: session,
-                    form_id: FormID(form.clone()),
-                    answer,
-                }))
-                .await?;
-            emit(events, Event::FormReplied { form });
+                .store
+                .data
+                .form_reply(
+                    SessionFormReplyInput {
+                        session_id: session,
+                        form_id: FormID(form),
+                        answer,
+                    },
+                    None,
+                )
+                .await
+                .map_err(|error| anyhow::anyhow!(error.tui_message()))?;
         }
         Command::LoadPreview { directory, path } => {
             let content = service.file(&directory, &path).await?;
@@ -638,75 +772,196 @@ async fn run_command(
     Ok(())
 }
 
-fn spawn_stream(
-    client: Client,
+fn conversation_snapshot(data: &StoreData, session: &str) -> (Vec<Value>, Vec<Value>, Vec<Value>) {
+    let id = SessionID(session.to_owned());
+    data.read(|state| {
+        let messages = state
+            .messages(&id)
+            .iter()
+            .map(|message| serde_json::to_value(message).unwrap_or(Value::Null))
+            .collect();
+        let permissions = state
+            .permissions(&id)
+            .unwrap_or_default()
+            .iter()
+            .map(|permission| serde_json::to_value(permission).unwrap_or(Value::Null))
+            .collect();
+        let forms = state
+            .forms(session, None)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|form| serde_json::to_value(&form.info).unwrap_or(Value::Null))
+            .collect();
+        (messages, permissions, forms)
+    })
+}
+
+fn approvals_snapshot(data: &StoreData, session: &str) -> (Vec<Value>, Vec<Value>) {
+    let id = SessionID(session.to_owned());
+    data.read(|state| {
+        let permissions = state
+            .permissions(&id)
+            .unwrap_or_default()
+            .iter()
+            .map(|permission| serde_json::to_value(permission).unwrap_or(Value::Null))
+            .collect();
+        let forms = state
+            .forms(session, None)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|form| serde_json::to_value(&form.info).unwrap_or(Value::Null))
+            .collect();
+        (permissions, forms)
+    })
+}
+
+fn sessions_snapshot(
+    data: &StoreData,
+    project: &str,
+    archived: bool,
+) -> (Vec<Session>, Vec<String>) {
+    data.read(|state| {
+        let sessions = state
+            .sessions()
+            .into_iter()
+            .filter(|session| {
+                session.project_id.0 == project
+                    && session.parent_id.is_none()
+                    && session.time.archived.is_some() == archived
+            })
+            .cloned()
+            .collect();
+        let running = state
+            .active_sessions()
+            .into_iter()
+            .map(|session| session.0.clone())
+            .collect();
+        (sessions, running)
+    })
+}
+
+fn spawn_store_watch(
+    store: Arc<StoreConnection>,
     generation: u64,
     valid: Arc<AtomicU64>,
     runtime: Handle,
     events: UiSender<Event>,
 ) {
     runtime.spawn(async move {
-        let mut connected_once = false;
-        while valid.load(Ordering::Acquire) == generation {
-            match tokio::time::timeout(
-                STREAM_CONNECT_TIMEOUT,
-                client.event_subscribe(&EventSubscribeInput::default()),
-            )
-            .await
-            {
-                Ok(Ok(response)) => {
-                    if connected_once {
-                        emit(&events, Event::StreamReconnected);
+        let mut revisions = store.data.subscribe();
+        let mut seen = store.data.revision();
+        let mut connection = store.watch();
+        let mut last_status = connection.borrow().status;
+        match last_status {
+            opencode_api::events::Status::Connected => {
+                emit(&events, Event::StreamReconnected);
+            }
+            opencode_api::events::Status::Connecting
+            | opencode_api::events::Status::Reconnecting => {
+                emit(&events, Event::StreamDisconnected);
+            }
+        }
+
+        loop {
+            tokio::select! {
+                changed = revisions.changed() => {
+                    if changed.is_err() || valid.load(Ordering::Acquire) != generation {
+                        break;
                     }
-                    connected_once = true;
-                    let stream = response.events(|| {});
-                    futures_util::pin_mut!(stream);
-                    loop {
-                        tokio::select! {
-                            _ = tokio::time::sleep(Duration::from_millis(500)) => {
-                                if valid.load(Ordering::Acquire) != generation {
-                                    break;
+                    let (revision, changes) = store.data.changes_since(seen);
+                    seen = revision;
+                    if changes.is_empty() {
+                        continue;
+                    }
+                    let context = store.context.lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .clone();
+
+                    if changes.projects() {
+                        let projects = store.data.read(|state| {
+                            state.projects().into_iter().cloned().collect()
+                        });
+                        emit(&events, Event::Projects { projects });
+                    }
+
+                    if (changes.sessions() || !changes.status.is_empty())
+                        && let Some(project) = context.project
+                    {
+                        let (items, running) = sessions_snapshot(
+                            &store.data,
+                            &project,
+                            context.archived,
+                        );
+                        emit(&events, Event::Sessions {
+                            project,
+                            archived: context.archived,
+                            items,
+                            running,
+                        });
+                    }
+
+                    if let Some((session, epoch)) = context.session {
+                        let id = SessionID(session.clone());
+                        if changes.messages(&id) {
+                            let (messages, permissions, forms) =
+                                conversation_snapshot(&store.data, &session);
+                            emit(&events, Event::Conversation {
+                                session,
+                                epoch,
+                                messages,
+                                permissions,
+                                forms,
+                            });
+                        } else {
+                            if let Some(changed) = changes.message.get(&id) {
+                                let items = store.data.read(|state| {
+                                    changed
+                                        .iter()
+                                        .filter_map(|message| {
+                                            state.message(&id, message.as_str())
+                                                .map(|item| serde_json::to_value(item).unwrap_or(Value::Null))
+                                        })
+                                        .collect::<Vec<_>>()
+                                });
+                                if !items.is_empty() {
+                                    emit(&events, Event::MessageUpdates {
+                                        session: session.clone(),
+                                        epoch,
+                                        items,
+                                    });
                                 }
                             }
-                            item = stream.next() => {
-                                match item {
-                                    Some(Ok(event)) => {
-                                        let raw = serde_json::to_value(event).unwrap_or(Value::Null);
-                                        emit(&events, Event::Stream(raw));
-                                    }
-                                    Some(Err(error)) => {
-                                        emit(&events, Event::Error(error.to_string()));
-                                        break;
-                                    }
-                                    None => break,
-                                }
+                            if changes.permissions(&id) || changes.forms(&session) {
+                                let (permissions, forms) = approvals_snapshot(&store.data, &session);
+                                emit(&events, Event::Approvals {
+                                    session,
+                                    epoch,
+                                    permissions,
+                                    forms,
+                                });
                             }
                         }
                     }
-                    if valid.load(Ordering::Acquire) == generation {
-                        emit(&events, Event::StreamDisconnected);
-                    }
                 }
-                Ok(Err(error)) => {
-                    if valid.load(Ordering::Acquire) == generation {
-                        emit(
-                            &events,
-                            Event::Error(format!("Event stream: {}", error.tui_message())),
-                        );
-                        emit(&events, Event::StreamDisconnected);
+                changed = connection.changed() => {
+                    if changed.is_err() || valid.load(Ordering::Acquire) != generation {
+                        break;
                     }
-                }
-                Err(_) => {
-                    if valid.load(Ordering::Acquire) == generation {
-                        emit(&events, Event::Error("Event stream connection timed out".into()));
-                        emit(&events, Event::StreamDisconnected);
+                    let status = connection.borrow().status;
+                    if status != last_status {
+                        match status {
+                            opencode_api::events::Status::Connected => {
+                                emit(&events, Event::StreamReconnected);
+                            }
+                            opencode_api::events::Status::Connecting
+                            | opencode_api::events::Status::Reconnecting => {
+                                emit(&events, Event::StreamDisconnected);
+                            }
+                        }
+                        last_status = status;
                     }
                 }
             }
-            if valid.load(Ordering::Acquire) != generation {
-                break;
-            }
-            tokio::time::sleep(Duration::from_secs(3)).await;
         }
     });
 }
@@ -730,10 +985,23 @@ mod tests {
                 let mut first = String::new();
                 reader.read_line(&mut first).unwrap();
                 let request_target = first.split_whitespace().nth(1).unwrap_or("");
-                assert!(
-                    request_target.starts_with(expected_path),
-                    "expected {expected_path:?}, received {request_target:?}"
-                );
+                let (actual_path, actual_query) = request_target
+                    .split_once('?')
+                    .unwrap_or((request_target, ""));
+                let (expected_path, expected_query) =
+                    expected_path.split_once('?').unwrap_or((expected_path, ""));
+                assert_eq!(actual_path, expected_path, "unexpected request path");
+                let mut actual: Vec<_> = actual_query
+                    .split('&')
+                    .filter(|part| !part.is_empty())
+                    .collect();
+                let mut expected: Vec<_> = expected_query
+                    .split('&')
+                    .filter(|part| !part.is_empty())
+                    .collect();
+                actual.sort_unstable();
+                expected.sort_unstable();
+                assert_eq!(actual, expected, "unexpected query parameters");
                 loop {
                     let mut line = String::new();
                     reader.read_line(&mut line).unwrap();
@@ -829,7 +1097,7 @@ mod tests {
                 json!({"data":[session("ses_2")],"cursor":{"next":"opaque-next"}}),
             ),
             (
-                "/api/session?cursor=opaque-next",
+                "/api/session?limit=50&order=desc&parentID=null&archived=false&project=prj_1&cursor=opaque-next",
                 json!({"data":[session("ses_1")],"cursor":{}}),
             ),
         ]);
@@ -844,7 +1112,10 @@ mod tests {
             .unwrap();
         let sessions = rt.block_on(service.sessions("prj_1", false)).unwrap();
         assert_eq!(
-            sessions.iter().map(|session| session.id.as_str()).collect::<Vec<_>>(),
+            sessions
+                .iter()
+                .map(|session| session.id.as_str())
+                .collect::<Vec<_>>(),
             vec!["ses_2", "ses_1"]
         );
         worker.join().unwrap();
@@ -873,7 +1144,8 @@ mod tests {
 
     #[test]
     fn official_project_and_timestamp_types_match_v2_wire_data() {
-        let project: Project = serde_json::from_value(project("prj_1", "/workspace/repo", "repo")).unwrap();
+        let project: Project =
+            serde_json::from_value(project("prj_1", "/workspace/repo", "repo")).unwrap();
         assert_eq!(project.canonical.as_str(), "/workspace/repo");
 
         let time: SessionInfoTime = serde_json::from_value(json!({

@@ -12,9 +12,9 @@ anyhow = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 smol = "2.0"
-opencode-api = { git = "https://github.com/anomalyco/opencode", rev = "a1834e74f515cd113cf9fbffcad672bc5ea41541" }
-opencode-local = { git = "https://github.com/anomalyco/opencode", rev = "a1834e74f515cd113cf9fbffcad672bc5ea41541" }
-futures-util = "0.3"
+opencode-api = { git = "https://github.com/anomalyco/opencode", rev = "5b9a2128fd39abd0126b856c7d0f6f9aa7c0fb5f" }
+opencode-local = { git = "https://github.com/anomalyco/opencode", rev = "5b9a2128fd39abd0126b856c7d0f6f9aa7c0fb5f" }
+opencode-store = { git = "https://github.com/anomalyco/opencode", rev = "5b9a2128fd39abd0126b856c7d0f6f9aa7c0fb5f" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
 
 [profile.release]
