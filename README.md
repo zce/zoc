@@ -14,7 +14,7 @@ The first prototype targets **Fedora GNOME / Wayland on x86_64**, using **Rust +
 
 ## Current status
 
-**Bootstrap only.** This README does not imply the application has been implemented. Development and the full acceptance checklist are tracked in the initial Draft Pull Request.
+**Experimental native prototype, not yet release-ready.** The prototype, official OpenCode Store integration, and native TitleBar have been consolidated into `main`. UI fidelity, Fedora/Wayland interaction, and real-service behavior still need verification. See [Agent handoff and UI parity goal](docs/AGENT_HANDOFF.md) for the current development direction and [feature parity](docs/FEATURE_PARITY.md) for the provisional checklist.
 
 ## Development principles
 
