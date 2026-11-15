@@ -21,6 +21,12 @@ Reference: `anomalyco/opencode` at commit
   listed across every project, as the official Inbox does; each row uses the
   session's own project name and avatar colour. Home filters its session list to
   the selected project.
+- Inbox cards share a roving keyboard cursor. Clicking a card focuses the
+  Inbox; Up/Down/Home/End move the cursor through the visible Needs
+  attention/Unread/Recent/Working rows, Enter opens the focused session and
+  Escape clears the cursor. The focused card uses the official hover surface
+  while the selected session keeps the pressed surface, and the list scrolls
+  the focused section into view.
 - Official status precedence: approval, form input, working, failed/done unread,
   ready. Working entries are ordered by run start and pinned in a shelf at the
   bottom of the sidebar. Recent is capped at ten with Show more/Show less.
@@ -45,7 +51,10 @@ Reference: `anomalyco/opencode` at commit
   permission dock and context-menu archive flow, including a two-project
   Inbox and selecting a session from the non-active project. Sidebar drag was exercised to
   510px, the 640px maximum, the 136px minimum, and double-click reset to 344px;
-  the width persisted in settings.
+  the width persisted in settings. Inbox keyboard navigation was exercised by
+  clicking a card, moving with Down/Home/End, opening with Enter and confirming
+  that search-field keys were not captured; in a 900x600 window the list
+  scrolled the Recent section into view as the cursor advanced.
 - The mock service was not the real OpenCode service. Server-side decorations
   were exercised under openbox; the client-decorated fallback was inspected by
   forcing its draw path because Xvfb provides no compositor.
@@ -58,9 +67,15 @@ Reference: `anomalyco/opencode` at commit
   differs slightly from the official menu.
 - Attention age uses the session's idle/update time; the pinned store request
   snapshots do not expose the original request timestamp.
+- Keyboard auto-scroll follows the main Inbox list sections; the pinned Working
+  shelf does not scroll internally when its keyboard cursor moves through more
+  rows than its maximum height.
 - Session transcript, Markdown/tool-card density and Composer controls are a
   later milestone; only the header, user bubble, tool card and composer shell
   were adjusted here.
 - Fedora GNOME/Wayland still needs physical validation: native close/minimize/
   maximize, titlebar drag and double-click, resize, 100%/150%/200% scaling,
-  keyboard focus and IME.
+  keyboard focus and IME. Specifically, Tab into the Inbox, move with
+  Up/Down/Home/End, open with Enter, clear with Escape, confirm the focused row
+  stays visible while scrolling, and confirm search/composer typing is not
+  intercepted.

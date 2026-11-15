@@ -107,6 +107,9 @@ pub struct Zoc {
     sidebar_width: f32,
     resizing_sidebar: bool,
     preview_width: f32,
+    inbox_focus: FocusHandle,
+    inbox_cursor: Option<String>,
+    inbox_scroll: ScrollHandle,
     menu_target: Rc<RefCell<Option<String>>>,
     _subscriptions: Vec<Subscription>,
     _events_task: Task<()>,
@@ -148,6 +151,18 @@ impl Zoc {
         let preview_view = cx.new(|cx| TextViewState::markdown("", cx));
         let scroller = cx.new(|cx| MessageScrollerState::new(0, cx));
         cx.observe(&scroller, |_, _, cx| cx.notify()).detach();
+        let inbox_focus = cx.focus_handle();
+        let inbox_scroll = ScrollHandle::new();
+        let inbox_focus_subscription = cx.on_focus(&inbox_focus, window, |this, _, cx| {
+            if this.inbox_cursor.is_none() {
+                this.inbox_cursor = this
+                    .data
+                    .current_session
+                    .clone()
+                    .or_else(|| this.inbox_targets().first().map(|(id, _)| id.clone()));
+            }
+            cx.notify();
+        });
         let subscription = cx.subscribe_in(
             &search,
             window,
@@ -221,8 +236,11 @@ impl Zoc {
             sidebar_width,
             resizing_sidebar: false,
             preview_width: 420.,
+            inbox_focus,
+            inbox_cursor: None,
+            inbox_scroll,
             menu_target: Rc::new(RefCell::new(None)),
-            _subscriptions: vec![subscription],
+            _subscriptions: vec![subscription, inbox_focus_subscription],
             _events_task: task,
             _clock_task: clock,
         };
@@ -327,6 +345,116 @@ impl Zoc {
             self.data.prefs.drafts.insert(id.clone(), text);
             self.data.prefs.save();
         }
+    }
+
+    fn inbox_targets(&self) -> Vec<(String, usize)> {
+        let mut targets = Vec::new();
+
+        if self.data.archived {
+            let mut archived: Vec<_> = self
+                .data
+                .sessions
+                .iter()
+                .filter(|session| {
+                    self.filter.is_empty()
+                        || session
+                            .title
+                            .as_deref()
+                            .unwrap_or("")
+                            .to_lowercase()
+                            .contains(&self.filter.to_lowercase())
+                })
+                .cloned()
+                .collect();
+            archived.sort_by(|a, b| b.time.updated.total_cmp(&a.time.updated));
+            targets.extend(archived.into_iter().map(|session| (session.id.0, 1)));
+            return targets;
+        }
+
+        let mut section = 0;
+        for group in [
+            InboxGroup::Attention,
+            InboxGroup::Unread,
+            InboxGroup::Recent,
+        ] {
+            let entries = self.data.sorted_inbox(group, &self.filter);
+            if entries.is_empty() {
+                continue;
+            }
+            let visible = if group == InboxGroup::Recent && !self.data.prefs.recent_expanded {
+                entries.iter().take(10).cloned().collect()
+            } else {
+                entries
+            };
+            targets.extend(visible.into_iter().map(|session| (session.id.0, section)));
+            section += 1;
+        }
+
+        if self.data.prefs.working_expanded {
+            targets.extend(
+                self.data
+                    .sorted_inbox(InboxGroup::Working, &self.filter)
+                    .into_iter()
+                    .map(|session| (session.id.0, usize::MAX)),
+            );
+        }
+
+        targets
+    }
+
+    fn on_inbox_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.inbox_focus.is_focused(window) || event.keystroke.modifiers.modified() {
+            return;
+        }
+
+        let targets = self.inbox_targets();
+        if targets.is_empty() {
+            return;
+        }
+        let current = self
+            .inbox_cursor
+            .clone()
+            .or_else(|| self.data.current_session.clone())
+            .and_then(|id| targets.iter().position(|(target, _)| target == &id));
+
+        let next = match event.keystroke.key.as_str() {
+            "up" => Some(
+                current
+                    .map(|index| index.saturating_sub(1))
+                    .unwrap_or(targets.len() - 1),
+            ),
+            "down" => Some(
+                current
+                    .map(|index| (index + 1).min(targets.len() - 1))
+                    .unwrap_or(0),
+            ),
+            "home" => Some(0),
+            "end" => Some(targets.len() - 1),
+            "enter" => {
+                if let Some((id, _)) = current.and_then(|index| targets.get(index)) {
+                    let id = id.clone();
+                    self.switch_session(id, window, cx);
+                }
+                cx.stop_propagation();
+                return;
+            }
+            "escape" => {
+                self.inbox_cursor = None;
+                cx.notify();
+                cx.stop_propagation();
+                return;
+            }
+            _ => return,
+        };
+
+        let Some(index) = next else { return };
+        let (id, section) = targets[index].clone();
+        self.inbox_cursor = Some(id);
+        if section != usize::MAX {
+            self.inbox_scroll.scroll_to_item(section);
+        }
+        cx.notify();
+        cx.stop_propagation();
     }
 
     fn new_session(&mut self, cx: &mut Context<Self>) {
@@ -1148,7 +1276,16 @@ impl Zoc {
                 .child(label)
         };
 
-        let mut groups = v_flex().gap(px(2.)).min_h_0();
+        let mut groups = v_flex()
+            .id("inbox-groups")
+            .flex_1()
+            .gap(px(2.))
+            .min_h_0()
+            .track_scroll(&self.inbox_scroll)
+            .overflow_y_scroll()
+            .track_focus(&self.inbox_focus)
+            .tab_index(0)
+            .on_key_down(cx.listener(Self::on_inbox_key));
         let mut total = 0usize;
 
         if self.data.archived {
@@ -1284,6 +1421,7 @@ impl Zoc {
             self.data.sorted_inbox(InboxGroup::Working, &self.filter)
         };
         let working_expanded = self.data.prefs.working_expanded;
+        let groups = groups.vertical_scrollbar(&self.inbox_scroll);
 
         v_flex()
             .relative()
@@ -1339,13 +1477,7 @@ impl Zoc {
                 )
             })
             .child(div().h(px(16.)).w_full())
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scrollbar()
-                    .child(groups),
-            )
+            .child(v_flex().flex_1().min_h_0().child(groups))
             .child(
                 div()
                     .id("sidebar-resize")
@@ -1443,6 +1575,7 @@ impl Zoc {
         let target = self.menu_target.clone();
         let menu_id = id.clone();
         let unread = status.is_unread();
+        let focused = self.inbox_cursor.as_deref() == Some(id.as_str());
 
         let has_cue = status.is_working() || status.is_attention() || unread;
         let status_cue: AnyElement = if status.is_working() {
@@ -1483,9 +1616,12 @@ impl Zoc {
             .when(selected, |card| card.bg(t::pressed()))
             .when(!selected, |card| card.hover(|style| style.bg(t::hover())))
             .when(selected, |card| card.hover(|style| style.bg(t::pressed())))
-            .on_click(
-                cx.listener(move |this, _, window, cx| this.switch_session(id.clone(), window, cx)),
-            )
+            .when(focused && !selected, |card| card.bg(t::hover()))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.inbox_cursor = Some(id.clone());
+                window.focus(&this.inbox_focus, cx);
+                this.switch_session(id.clone(), window, cx)
+            }))
             .context_menu(move |menu, _, _| {
                 *target.borrow_mut() = Some(menu_id.clone());
                 let archive_action = if archived {
