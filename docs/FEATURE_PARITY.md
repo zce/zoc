@@ -9,7 +9,7 @@ This checklist uses **implemented in code** separately from **verified running**
 | Project switching / Home project list | Implemented | Pending |
 | Official shell layout, tokens and Inter type | Implemented | Pending |
 | Window controls and drag (SSD, CSD fallback) | Implemented in code | Pending |
-| Inbox groups: Needs attention / Unread / Recent / Working | Implemented from official store snapshots | Synthetic service only |
+| Inbox groups: Needs attention / Unread / Recent / Working, across projects | Implemented from official store snapshots | Synthetic service only |
 | Inbox cards: avatar, project, age, status cue | Implemented | Synthetic service only |
 | Inbox search, empty, recent-limit and archived states | Implemented | Synthetic service only |
 | Inbox context menu: rename, read/unread, archive/unarchive | Implemented | Synthetic service only |

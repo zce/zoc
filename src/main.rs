@@ -283,21 +283,11 @@ impl Zoc {
         self.save_draft(cx);
         self.data.current_project = Some(id.clone());
         self.data.current_session = None;
-        self.data.sessions.clear();
-        self.data.messages.clear();
-        self.data.permissions.clear();
-        self.data.forms.clear();
+        self.data.epoch = self.data.epoch.wrapping_add(1);
         self.rows.borrow_mut().clear();
         self.scroller.update(cx, |state, cx| state.reset(0, cx));
         self.data.prefs.last_project = Some(id.clone());
         self.data.prefs.save();
-        self.data.archived = false;
-        self.data.archived_available = false;
-        self.send_command(Command::ListSessions {
-            project: id.clone(),
-            archived: false,
-        });
-        self.send_command(Command::HasArchived { project: id });
         if let Some(directory) = self.data.project_directory().map(str::to_owned) {
             self.send_command(Command::LoadMetadata { directory });
         }
@@ -306,6 +296,24 @@ impl Zoc {
 
     fn switch_session(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
         self.save_draft(cx);
+        if let Some((project, directory)) = self
+            .data
+            .sessions
+            .iter()
+            .find(|session| session.id.0 == id)
+            .map(|session| {
+                (
+                    session.project_id.0.clone(),
+                    session.location.directory.0.clone(),
+                )
+            })
+            && self.data.current_project.as_deref() != Some(project.as_str())
+        {
+            self.data.current_project = Some(project.clone());
+            self.data.prefs.last_project = Some(project);
+            self.data.prefs.save();
+            self.send_command(Command::LoadMetadata { directory });
+        }
         self.open_selected(id.clone(), cx);
         let draft = self.data.prefs.drafts.get(&id).cloned().unwrap_or_default();
         self.composer
@@ -396,6 +404,7 @@ impl Zoc {
                     .or_else(|| self.data.projects.first().map(|p| p.id.0.clone()));
                 if let Some(id) = selected {
                     self.switch_project(id, cx);
+                    self.refresh_sessions();
                 }
             }
             Event::Projects { projects } => {
@@ -416,16 +425,12 @@ impl Zoc {
                 }
             }
             Event::Sessions {
-                project,
                 archived,
                 items,
                 running,
                 approvals,
                 questions,
             } => {
-                if self.data.current_project.as_deref() != Some(project.as_str()) {
-                    return;
-                }
                 if self.data.archived != archived {
                     return;
                 }
@@ -487,10 +492,8 @@ impl Zoc {
                     self.scroller.update(cx, |state, cx| state.reset(0, cx));
                 }
             }
-            Event::ArchivedAvailable { project, available } => {
-                if self.data.current_project.as_deref() == Some(project.as_str()) {
-                    self.data.archived_available = available;
-                }
+            Event::ArchivedAvailable { available } => {
+                self.data.archived_available = available;
             }
             Event::Metadata {
                 directory,
@@ -675,13 +678,13 @@ impl Zoc {
     }
 
     fn refresh_sessions(&mut self) {
-        if let Some(project) = self.data.current_project.clone() {
-            self.send_command(Command::ListSessions {
-                project: project.clone(),
-                archived: self.data.archived,
-            });
-            self.send_command(Command::HasArchived { project });
+        if !self.data.connected {
+            return;
         }
+        self.send_command(Command::ListSessions {
+            archived: self.data.archived,
+        });
+        self.send_command(Command::HasArchived);
     }
 
     fn row_from_value(&mut self, message: &Value, cx: &mut Context<Self>) -> MessageRow {
@@ -929,6 +932,13 @@ impl Zoc {
             .projects
             .iter()
             .find(|project| Some(&project.id.0) == self.data.current_project.as_ref())
+    }
+
+    fn project_for_session(&self, session: &api::Session) -> Option<&api::Project> {
+        self.data
+            .projects
+            .iter()
+            .find(|project| project.id.0 == session.project_id.0)
     }
 
     fn toggle_working(&mut self, cx: &mut Context<Self>) {
@@ -1420,7 +1430,7 @@ impl Zoc {
         let id = session.id.0.clone();
         let selected = self.data.current_session.as_ref() == Some(&id);
         let status = self.data.status(session);
-        let project = self.active_project();
+        let project = self.project_for_session(session);
         let directory = session.location.directory.0.clone();
         let project_name = t::project_name(project, &directory);
         let tone = t::project_tone(project);
@@ -1702,7 +1712,17 @@ impl Zoc {
             );
         }
 
-        let mut sessions: Vec<_> = self.data.sessions.iter().collect();
+        let mut sessions: Vec<_> = self
+            .data
+            .sessions
+            .iter()
+            .filter(|session| {
+                self.data
+                    .current_project
+                    .as_ref()
+                    .is_none_or(|project| &session.project_id.0 == project)
+            })
+            .collect();
         sessions.sort_by(|a, b| b.time.updated.total_cmp(&a.time.updated));
         let has_sessions = !sessions.is_empty();
         let now = t::now_ms();
@@ -2554,8 +2574,13 @@ impl Zoc {
             .and_then(|session| session.title.clone())
             .filter(|title| !title.trim().is_empty())
             .unwrap_or_else(|| "Session".into());
-        let project_name = self.active_project_name();
-        let tone = t::project_tone(self.active_project());
+        let header_project = current
+            .and_then(|session| self.project_for_session(session))
+            .or_else(|| self.active_project());
+        let project_name = current
+            .map(|session| t::project_name(header_project, &session.location.directory.0))
+            .unwrap_or_else(|| self.active_project_name());
+        let tone = t::project_tone(header_project);
         let working = current
             .map(|session| self.data.status(session).is_working())
             .unwrap_or(false);
@@ -2785,8 +2810,9 @@ impl Zoc {
         cx.notify();
     }
     fn render_titlebar(&self, _cx: &mut Context<Self>) -> AnyElement {
+        let project = self.active_project();
         let project_name = self.active_project_name();
-        let tone = t::project_tone(self.active_project());
+        let tone = t::project_tone(project);
         let status = if !self.data.connected {
             "Disconnected"
         } else if !self.data.stream_connected {

@@ -84,15 +84,12 @@ pub fn model_display(model: &ModelRef) -> String {
 pub enum Command {
     Connect(Connection),
     ListSessions {
-        project: String,
         archived: bool,
     },
     LoadMetadata {
         directory: String,
     },
-    HasArchived {
-        project: String,
-    },
+    HasArchived,
     LoadConversation {
         session: String,
         epoch: u64,
@@ -147,7 +144,6 @@ pub enum Event {
         projects: Vec<Project>,
     },
     Sessions {
-        project: String,
         archived: bool,
         items: Vec<Session>,
         running: Vec<String>,
@@ -178,7 +174,6 @@ pub enum Event {
         agents: Vec<Agent>,
     },
     ArchivedAvailable {
-        project: String,
         available: bool,
     },
     Created(Box<Session>),
@@ -292,7 +287,6 @@ fn emit(sender: &UiSender<Event>, event: Event) {
 
 #[derive(Clone, Default)]
 struct WatchContext {
-    project: Option<String>,
     archived: bool,
     session: Option<(String, u64)>,
 }
@@ -424,14 +418,13 @@ impl ServiceClient {
             .read(|state| state.projects().into_iter().cloned().collect()))
     }
 
-    async fn sessions(&self, project: &str, archived: bool) -> anyhow::Result<Vec<Session>> {
+    async fn sessions(&self, archived: bool) -> anyhow::Result<Vec<Session>> {
         {
             let mut context = self
                 .store
                 .context
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
-            context.project = Some(project.to_owned());
             context.archived = archived;
         }
         let mut result = Vec::new();
@@ -442,7 +435,6 @@ impl ServiceClient {
                 order: Some(SessionListInputOrder::Desc),
                 parent_id: Some(None),
                 archived: Some(archived),
-                project: Some(ProjectID(project.to_owned())),
                 cursor: cursor.clone(),
                 ..Default::default()
             };
@@ -450,7 +442,7 @@ impl ServiceClient {
             for session in response
                 .data
                 .into_iter()
-                .filter(|session| session.project_id.0 == project && session.parent_id.is_none())
+                .filter(|session| session.parent_id.is_none())
             {
                 self.store.data.remember(session.clone());
                 result.push(session);
@@ -496,14 +488,13 @@ impl ServiceClient {
         context.session = Some((session, epoch));
     }
 
-    async fn has_archived(&self, project: &str) -> anyhow::Result<bool> {
+    async fn has_archived(&self) -> anyhow::Result<bool> {
         let response = self
             .call(self.client.session_list(&SessionListInput {
                 limit: Some(1),
                 order: Some(SessionListInputOrder::Desc),
                 parent_id: Some(None),
                 archived: Some(true),
-                project: Some(ProjectID(project.to_owned())),
                 ..Default::default()
             }))
             .await?;
@@ -589,18 +580,17 @@ async fn run_command(
                 },
             );
         }
-        Command::HasArchived { project } => {
-            let available = service.has_archived(&project).await?;
-            emit(events, Event::ArchivedAvailable { project, available });
+        Command::HasArchived => {
+            let available = service.has_archived().await?;
+            emit(events, Event::ArchivedAvailable { available });
         }
-        Command::ListSessions { project, archived } => {
-            let items = service.sessions(&project, archived).await?;
+        Command::ListSessions { archived } => {
+            let items = service.sessions(archived).await?;
             let (items, running, approvals, questions) =
                 sessions_snapshot(&service.store.data, items);
             emit(
                 events,
                 Event::Sessions {
-                    project,
                     archived,
                     items,
                     running,
@@ -901,19 +891,17 @@ fn spawn_store_watch(
                         emit(&events, Event::Projects { projects });
                     }
 
-                    if (changes.sessions()
+                    if changes.sessions()
                         || !changes.status.is_empty()
                         || !changes.permissions.is_empty()
-                        || !changes.forms.is_empty())
-                        && let Some(project) = context.project
+                        || !changes.forms.is_empty()
                     {
                         let items = store.data.read(|state| {
                             state
                                 .sessions()
                                 .into_iter()
                                 .filter(|session| {
-                                    session.project_id.0 == project
-                                        && session.parent_id.is_none()
+                                    session.parent_id.is_none()
                                         && session.time.archived.is_some() == context.archived
                                 })
                                 .cloned()
@@ -922,7 +910,6 @@ fn spawn_store_watch(
                         let (items, running, approvals, questions) =
                             sessions_snapshot(&store.data, items);
                         emit(&events, Event::Sessions {
-                            project,
                             archived: context.archived,
                             items,
                             running,
@@ -1124,11 +1111,11 @@ mod tests {
         let (url, worker) = mock_api(vec![
             ("/api/info", server_info(1)),
             (
-                "/api/session?limit=50&order=desc&parentID=null&archived=false&project=prj_1",
+                "/api/session?limit=50&order=desc&parentID=null&archived=false",
                 json!({"data":[session("ses_2")],"cursor":{"next":"opaque-next"}}),
             ),
             (
-                "/api/session?limit=50&order=desc&parentID=null&archived=false&project=prj_1&cursor=opaque-next",
+                "/api/session?limit=50&order=desc&parentID=null&archived=false&cursor=opaque-next",
                 json!({"data":[session("ses_1")],"cursor":{}}),
             ),
         ]);
@@ -1141,7 +1128,7 @@ mod tests {
                 expected_pid: None,
             }))
             .unwrap();
-        let sessions = rt.block_on(service.sessions("prj_1", false)).unwrap();
+        let sessions = rt.block_on(service.sessions(false)).unwrap();
         assert_eq!(
             sessions
                 .iter()
