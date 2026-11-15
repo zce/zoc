@@ -5,9 +5,14 @@ This checklist uses **implemented in code** separately from **verified running**
 | Official Desktop workflow | Prototype code | Real-service verification |
 |---|---|---|
 | Connect using service registration | Implemented | Pending |
-| Manual HTTP(S) connection | Implemented | Pending |
-| Project switching | Implemented | Pending |
-| Inbox group classification | Implemented, local snapshot | Pending |
+| Manual HTTP(S) connection, last-endpoint reconnect | Implemented | Pending |
+| Project switching / Home project list | Implemented | Pending |
+| Official shell layout, tokens and Inter type | Implemented | Pending |
+| Window controls and drag (SSD, CSD fallback) | Implemented in code | Pending |
+| Inbox groups: Needs attention / Unread / Recent / Working | Implemented from official store snapshots | Synthetic service only |
+| Inbox cards: avatar, project, age, status cue | Implemented | Synthetic service only |
+| Inbox search, empty, recent-limit and archived states | Implemented | Synthetic service only |
+| Inbox context menu: rename, read/unread, archive/unarchive | Implemented | Synthetic service only |
 | Create/open/rename/archive sessions | Implemented | Pending |
 | Agent/model/variant selection | Implemented | Pending |
 | Real prompt, streaming and continuation | Implemented | Pending |
@@ -18,7 +23,8 @@ This checklist uses **implemented in code** separately from **verified running**
 | File preview | Partial: UTF-8 text and Markdown | Pending |
 | Git working tree changes | Partial | Pending |
 | Image attachments/previews | Not yet implemented | Pending |
-| Resizable sidebar/preview | Partial: width controls | Pending |
+| Resizable sidebar | Not yet: fixed 344px | N/A |
+| Resizable preview | Partial: width controls | Pending |
 | Terminal tabs | Deferred | N/A |
 | Multi-session tabs | Deferred | N/A |
 

@@ -1,6 +1,6 @@
 # ZOC
 
-**ZOC** is a planned lightweight, native Linux desktop client for an existing [OpenCode](https://github.com/anomalyco/opencode) service.
+**ZOC** is a lightweight, native Linux desktop client for an existing [OpenCode](https://github.com/anomalyco/opencode) service.
 
 The first prototype targets **Fedora GNOME / Wayland on x86_64**, using **Rust + GPUI Kit**. ZOC is a client only: it will use OpenCode's official HTTP and SSE APIs rather than bundling an agent runtime, server, browser, or JavaScript runtime.
 
@@ -14,7 +14,7 @@ The first prototype targets **Fedora GNOME / Wayland on x86_64**, using **Rust +
 
 ## Current status
 
-**Experimental native prototype, not yet release-ready.** The prototype, official OpenCode Store integration, and native TitleBar have been consolidated into `main`. UI fidelity, Fedora/Wayland interaction, and real-service behavior still need verification. See [Agent handoff and UI parity goal](docs/AGENT_HANDOFF.md) for the current development direction and [feature parity](docs/FEATURE_PARITY.md) for the provisional checklist.
+**Experimental native prototype, not yet release-ready.** The shell and Inbox now follow OpenCode Desktop's current design tokens, 344px sidebar proportions, 8px panel insets, Inter typography and Inbox semantics. Session transcript and Composer fidelity are the next milestone. Fedora GNOME/Wayland window behavior and a real OpenCode service still need manual verification; see [shell and Inbox notes](docs/SHELL_INBOX.md), the [agent handoff](docs/AGENT_HANDOFF.md) and the [feature checklist](docs/FEATURE_PARITY.md).
 
 ## Development principles
 
