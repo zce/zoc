@@ -70,9 +70,8 @@ Reference: `anomalyco/opencode` at commit
 - Keyboard auto-scroll follows the main Inbox list sections; the pinned Working
   shelf does not scroll internally when its keyboard cursor moves through more
   rows than its maximum height.
-- Session transcript, Markdown/tool-card density and Composer controls are a
-  later milestone; only the header, user bubble, tool card and composer shell
-  were adjusted here.
+- Session transcript and Composer follow-up work is recorded separately in
+  [SESSION_COMPOSER.md](SESSION_COMPOSER.md).
 - Fedora GNOME/Wayland still needs physical validation: native close/minimize/
   maximize, titlebar drag and double-click, resize, 100%/150%/200% scaling,
   keyboard focus and IME. Specifically, Tab into the Inbox, move with

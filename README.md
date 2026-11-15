@@ -14,7 +14,7 @@ The first prototype targets **Fedora GNOME / Wayland on x86_64**, using **Rust +
 
 ## Current status
 
-**Experimental native prototype, not yet release-ready.** The shell and Inbox now follow OpenCode Desktop's current design tokens, 344px sidebar proportions, 8px panel insets, Inter typography and Inbox semantics. Session transcript and Composer fidelity are the next milestone. Fedora GNOME/Wayland window behavior and a real OpenCode service still need manual verification; see [shell and Inbox notes](docs/SHELL_INBOX.md), the [agent handoff](docs/AGENT_HANDOFF.md) and the [feature checklist](docs/FEATURE_PARITY.md).
+**Experimental native prototype, not yet release-ready.** The shell, Inbox, session transcript and Composer now follow OpenCode Desktop's current design tokens, 344px sidebar proportions, 8px panel insets and Inter typography. Fedora GNOME/Wayland window behavior, streaming transcripts and a real OpenCode service still need manual verification; see [shell and Inbox notes](docs/SHELL_INBOX.md), [session and Composer notes](docs/SESSION_COMPOSER.md), the [agent handoff](docs/AGENT_HANDOFF.md) and the [feature checklist](docs/FEATURE_PARITY.md).
 
 ## Development principles
 
