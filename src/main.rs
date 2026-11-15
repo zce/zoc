@@ -124,6 +124,21 @@ fn markdown_style() -> TextViewStyle {
     style
 }
 
+fn form_values_match(current: &Value, expected: &Value) -> bool {
+    if current == expected {
+        return true;
+    }
+    match expected {
+        Value::Number(expected) => current
+            .as_f64()
+            .or_else(|| current.as_str().and_then(|text| text.trim().parse().ok()))
+            .is_some_and(|current| current == expected.as_f64().unwrap_or(f64::NAN)),
+        Value::Bool(expected) => current.as_bool() == Some(*expected),
+        Value::String(expected) => current.as_str() == Some(expected),
+        _ => false,
+    }
+}
+
 fn form_option_chip(
     id: String,
     label: String,
@@ -1235,10 +1250,57 @@ impl Zoc {
         input
     }
 
+    fn form_current_value(&self, form_id: &str, key: &str, field: &Value, cx: &App) -> Value {
+        let value_key = format!("{form_id}:{key}");
+        if field["custom"].as_bool() == Some(true)
+            && let Some(input) = self
+                .form_inputs
+                .borrow()
+                .get(&format!("{value_key}:custom"))
+        {
+            let text = input.read(cx).value().to_string();
+            if !text.trim().is_empty() {
+                return Value::String(text);
+            }
+        }
+        if let Some(value) = self.form_values.borrow().get(&value_key) {
+            return value.clone();
+        }
+        if let Some(input) = self.form_inputs.borrow().get(&value_key) {
+            return Value::String(input.read(cx).value().to_string());
+        }
+        field.get("default").cloned().unwrap_or(Value::Null)
+    }
+
+    fn form_field_visible(&self, form_id: &str, fields: &[Value], field: &Value, cx: &App) -> bool {
+        if field["hidden"].as_bool() == Some(true) {
+            return false;
+        }
+        let Some(conditions) = field["when"].as_array() else {
+            return true;
+        };
+        conditions.iter().all(|condition| {
+            let Some(key) = condition["key"].as_str() else {
+                return true;
+            };
+            let Some(dependency) = fields.iter().find(|candidate| candidate["key"] == key) else {
+                return true;
+            };
+            let current = self.form_current_value(form_id, key, dependency, cx);
+            let expected = condition.get("value").cloned().unwrap_or(Value::Null);
+            let equal = form_values_match(&current, &expected);
+            match condition["op"].as_str() {
+                Some("neq") => !equal,
+                Some("eq") => equal,
+                _ => true,
+            }
+        })
+    }
+
     fn form_answer(&self, form_id: &str, fields: &[Value], cx: &App) -> Result<Value, String> {
         let mut answer = serde_json::Map::new();
         for field in fields {
-            if field["hidden"].as_bool() == Some(true) {
+            if !self.form_field_visible(form_id, fields, field, cx) {
                 continue;
             }
             let key = field["key"].as_str().unwrap_or("");
@@ -1252,12 +1314,7 @@ impl Zoc {
 
             match field_type {
                 "string" if field["options"].is_array() => {
-                    let value = self
-                        .form_values
-                        .borrow()
-                        .get(&value_key)
-                        .cloned()
-                        .unwrap_or(Value::Null);
+                    let value = self.form_current_value(form_id, key, field, cx);
                     if value.is_null() {
                         if required {
                             return Err(format!("Choose a value for {label}"));
@@ -2653,7 +2710,7 @@ impl Zoc {
             let mut fields_view = v_flex().w_full().gap(px(12.));
 
             for field in &form_fields {
-                if field["hidden"].as_bool() == Some(true) {
+                if !self.form_field_visible(&id, &form_fields, field, cx) {
                     continue;
                 }
                 let key = field["key"].as_str().unwrap_or("field").to_owned();
@@ -2701,7 +2758,29 @@ impl Zoc {
                                 )),
                             );
                         }
-                        chips.into_any_element()
+                        let mut control = v_flex().w_full().gap(px(6.)).child(chips);
+                        if field["custom"].as_bool() == Some(true) {
+                            let custom_key = format!("{value_key}:custom");
+                            let input = self.form_field_input(&custom_key, "Other", "", window, cx);
+                            control = control.child(
+                                div()
+                                    .h(px(30.))
+                                    .w_full()
+                                    .flex()
+                                    .items_center()
+                                    .rounded(px(6.))
+                                    .bg(t::layer_02())
+                                    .border_1()
+                                    .border_color(t::border_muted())
+                                    .child(
+                                        Input::new(&input)
+                                            .appearance(false)
+                                            .bordered(false)
+                                            .small(),
+                                    ),
+                            );
+                        }
+                        control.into_any_element()
                     }
                     "string" => {
                         let default = field["default"].as_str().unwrap_or("");
@@ -4001,4 +4080,27 @@ fn main() {
             )
             .expect("Could not open ZOC native window");
         });
+}
+
+#[cfg(test)]
+mod ui_tests {
+    use crate::{form_values_match, tool_label};
+    use serde_json::json;
+
+    #[test]
+    fn form_conditions_compare_wire_values_by_type() {
+        assert!(form_values_match(&json!("json"), &json!("json")));
+        assert!(!form_values_match(&json!("markdown"), &json!("json")));
+        assert!(form_values_match(&json!("42"), &json!(42)));
+        assert!(form_values_match(&json!(42), &json!(42.0)));
+        assert!(form_values_match(&json!(true), &json!(true)));
+        assert!(!form_values_match(&json!("true"), &json!(true)));
+    }
+
+    #[test]
+    fn tool_labels_cover_common_names() {
+        assert_eq!(tool_label("bash"), "Shell");
+        assert_eq!(tool_label("read"), "Read");
+        assert_eq!(tool_label("unknown-tool"), "Unknown-tool");
+    }
 }

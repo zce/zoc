@@ -33,7 +33,9 @@ Reference: `anomalyco/opencode` at commit
   monospace resource patterns and the official action order: Reject, Always
   allow, Allow once. Form requests use the same surface with native string,
   option, boolean and multiselect controls, required-field checks and typed
-  answers; the JSON answer editor is gone.
+  answers; the JSON answer editor is gone. Conditional fields support `eq`/`neq`
+  rules, string options with `custom: true` show an Other input, and a typed
+  answer is only built from currently visible fields.
 - Session metadata no longer clears the selected model/agent when a session row
   omits those fields.
 
@@ -41,10 +43,13 @@ Reference: `anomalyco/opencode` at commit
 
 - Podman Fedora 45: `cargo fmt --all --check`, `cargo clippy --all-targets --
   -D warnings`, 15 unit tests, `cargo build --release`, `zoc --check`.
+- Podman Fedora 45: 17 unit tests.
 - Xvfb + openbox with a disposable mock OpenCode transcript: inspected user and
   assistant turns, reasoning reveal, Markdown headings/lists/code, compact tool
   rows, expanded red/green diff, file preview open, permission dock, native
-  question fields, model picker and composer states.
+  question fields (including a conditional field and custom option input), model
+  picker and composer states. An SSE `session.text.delta` appended text into the
+  open assistant row in place and the timeline stayed at its tail.
 - This did not use the real OpenCode service and did not exercise streaming
   deltas, long transcripts, attachments, images or real syntax coverage.
 
@@ -55,9 +60,9 @@ Reference: `anomalyco/opencode` at commit
 - Tool output is a simple two-block diff for edit/write; syntax-highlighted
   line numbers, context lines and dedicated read/grep/task renderers are not
   implemented.
-- Question forms support string, option, boolean and multiselect fields, but
-  not conditional `when` rules, custom option text, external controls or
-  server-side validation display.
+- Question forms support string, option, boolean, multiselect, `eq`/`neq`
+  conditional fields and custom option text, but not external controls,
+  server-side validation display or full official Select/Checkbox styling.
 - Model/agent pickers have no search, provider icons or grouping, and no keyboard
   navigation.
 - No token/cost/duration footer under responses or per-message action menus.

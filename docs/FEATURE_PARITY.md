@@ -23,7 +23,7 @@ This checklist uses **implemented in code** separately from **verified running**
 | Permission requests and responses | Implemented | Pending |
 | Permission dock | Implemented | Synthetic service only |
 | Question forms | Implemented: string/option/boolean/multiselect | Synthetic service only |
-| Conditional/custom form fields | Partial | Pending |
+| Conditional (`eq`/`neq`) and custom option fields | Implemented | Synthetic service only |
 | Markdown / selection / code | Native TextView | Pending |
 | File preview | Partial: UTF-8 text and Markdown | Pending |
 | Git working tree changes | Partial | Pending |
