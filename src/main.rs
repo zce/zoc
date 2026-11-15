@@ -1,13 +1,15 @@
 mod api;
 mod state;
+mod theme;
 
 use api::{Command, Event, ModelRef, model_display};
-use gpui_kit::base::{Selectable as _, StyledExt as _};
+use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::{
-    ActiveTheme, Sizable as _, TitleBar,
+    ActiveTheme, Icon, Sizable as _, TitleBar,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputState, Textarea, TextareaState},
+    menu::ContextMenuExt as _,
     message_scroller::{MessageScroller, MessageScrollerState},
     scroll::ScrollableElement as _,
     text::{TextView, TextViewState},
@@ -16,13 +18,11 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use serde_json::Value;
-use state::{AppState, InboxGroup};
+use state::{AppState, InboxGroup, InboxStatus, session_since};
 use std::{
-    cell::RefCell,
-    collections::{HashMap, HashSet},
-    rc::Rc,
-    sync::mpsc::Sender,
+    borrow::Cow, cell::RefCell, collections::HashMap, rc::Rc, sync::mpsc::Sender, time::Duration,
 };
+use theme as t;
 
 actions!(
     zoc,
@@ -31,7 +31,12 @@ actions!(
         SendPrompt,
         FocusComposer,
         FocusSearch,
-        TogglePreview
+        TogglePreview,
+        ShowHome,
+        RenameMenuSession,
+        ToggleMenuRead,
+        ArchiveMenuSession,
+        UnarchiveMenuSession
     ]
 );
 
@@ -59,6 +64,21 @@ struct MessageRow {
     error: Option<String>,
 }
 
+fn section_label(label: &'static str) -> AnyElement {
+    div()
+        .h(px(24.))
+        .w_full()
+        .flex()
+        .items_center()
+        .px(px(8.))
+        .text_size(px(13.))
+        .line_height(px(16.))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(t::text_muted())
+        .child(label)
+        .into_any_element()
+}
+
 pub struct Zoc {
     data: AppState,
     commands: Sender<Command>,
@@ -72,9 +92,10 @@ pub struct Zoc {
     scroller: Entity<MessageScrollerState>,
     rows: Rc<RefCell<Vec<MessageRow>>>,
     markdown: HashMap<String, (String, Entity<TextViewState>)>,
-    collapsed: HashSet<InboxGroup>,
     filter: String,
     show_connection: bool,
+    show_home: bool,
+    show_search: bool,
     show_session_actions: bool,
     show_models: bool,
     show_agents: bool,
@@ -83,8 +104,10 @@ pub struct Zoc {
     show_reasoning: bool,
     sidebar_width: f32,
     preview_width: f32,
+    menu_target: Rc<RefCell<Option<String>>>,
     _subscriptions: Vec<Subscription>,
     _events_task: Task<()>,
+    _clock_task: Task<()>,
 }
 
 impl Zoc {
@@ -97,7 +120,9 @@ impl Zoc {
             .or_else(|| data.prefs.endpoint.clone())
             .unwrap_or_default();
         let server = cx.new(|cx| InputState::new(window, cx).placeholder("http://127.0.0.1:4096"));
-        server.update(cx, |state, cx| state.set_value(server_url, window, cx));
+        server.update(cx, |state, cx| {
+            state.set_value(server_url.clone(), window, cx)
+        });
         let password = cx.new(|cx| InputState::new(window, cx).placeholder("Server password"));
         if let Some(ref local) = local {
             password.update(cx, |state, cx| {
@@ -141,6 +166,31 @@ impl Zoc {
                 }
             }
         });
+        let clock = cx.spawn(async move |weak, cx| {
+            let mut interval = Duration::from_secs(30);
+            loop {
+                cx.background_executor().timer(interval).await;
+                let mut working = false;
+                if weak
+                    .update(cx, |this, cx| {
+                        working = this
+                            .data
+                            .sessions
+                            .iter()
+                            .any(|session| this.data.status(session).is_working());
+                        cx.notify();
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+                interval = if working {
+                    Duration::from_secs(1)
+                } else {
+                    Duration::from_secs(30)
+                };
+            }
+        });
         let mut view = Self {
             data,
             commands,
@@ -154,22 +204,32 @@ impl Zoc {
             scroller,
             rows: Rc::new(RefCell::new(Vec::new())),
             markdown: HashMap::new(),
-            collapsed: HashSet::new(),
             filter: String::new(),
-            show_connection: local.is_none(),
+            show_connection: local.is_none() && server_url.is_empty(),
+            show_home: true,
+            show_search: false,
             show_session_actions: false,
             show_models: false,
             show_agents: false,
             show_variants: false,
             show_preview: false,
             show_reasoning: false,
-            sidebar_width: 290.,
+            sidebar_width: 344.,
             preview_width: 420.,
+            menu_target: Rc::new(RefCell::new(None)),
             _subscriptions: vec![subscription],
             _events_task: task,
+            _clock_task: clock,
         };
         if let Some(local) = local {
             view.send_command(Command::Connect(local));
+        } else if !server_url.is_empty() {
+            view.send_command(Command::Connect(api::Connection {
+                url: server_url,
+                password: String::new(),
+                username: "opencode".into(),
+                expected_pid: None,
+            }));
         }
         view
     }
@@ -188,6 +248,8 @@ impl Zoc {
         self.data.error = None;
         self.data.current_session = None;
         self.data.current_project = None;
+        self.data.archived = false;
+        self.data.archived_available = false;
         self.data.epoch = self.data.epoch.wrapping_add(1);
         self.data.projects.clear();
         self.data.sessions.clear();
@@ -198,6 +260,7 @@ impl Zoc {
         self.data.agents.clear();
         self.data.selected_model = None;
         self.data.selected_agent = None;
+        self.show_home = true;
         self.rows.borrow_mut().clear();
         self.scroller.update(cx, |state, cx| state.reset(0, cx));
         self.data.prefs.endpoint = Some(url.clone());
@@ -224,10 +287,12 @@ impl Zoc {
         self.data.prefs.last_project = Some(id.clone());
         self.data.prefs.save();
         self.data.archived = false;
+        self.data.archived_available = false;
         self.send_command(Command::ListSessions {
-            project: id,
+            project: id.clone(),
             archived: false,
         });
+        self.send_command(Command::HasArchived { project: id });
         if let Some(directory) = self.data.project_directory().map(str::to_owned) {
             self.send_command(Command::LoadMetadata { directory });
         }
@@ -350,6 +415,8 @@ impl Zoc {
                 archived,
                 items,
                 running,
+                approvals,
+                questions,
             } => {
                 if self.data.current_project.as_deref() != Some(project.as_str()) {
                     return;
@@ -359,6 +426,7 @@ impl Zoc {
                 }
                 self.data.sessions = items;
                 self.data.running = running.into_iter().collect();
+                self.data.set_attention(approvals, questions);
                 if let Some(session) = self.data.current_session.as_deref().and_then(|id| {
                     self.data
                         .sessions
@@ -367,6 +435,10 @@ impl Zoc {
                 }) {
                     self.data.selected_model = session.model.clone();
                     self.data.selected_agent = session.agent.as_ref().map(|agent| agent.0.clone());
+                }
+                if self.show_home {
+                    cx.notify();
+                    return;
                 }
                 let target = self
                     .data
@@ -408,6 +480,11 @@ impl Zoc {
                     self.data.epoch = self.data.epoch.wrapping_add(1);
                     self.rows.borrow_mut().clear();
                     self.scroller.update(cx, |state, cx| state.reset(0, cx));
+                }
+            }
+            Event::ArchivedAvailable { project, available } => {
+                if self.data.current_project.as_deref() == Some(project.as_str()) {
+                    self.data.archived_available = available;
                 }
             }
             Event::Metadata {
@@ -509,6 +586,7 @@ impl Zoc {
             }
             Event::Created(session) => {
                 let id = session.id.0.clone();
+                self.show_home = false;
                 self.data
                     .sessions
                     .retain(|existing| existing.id.as_str() != id);
@@ -594,9 +672,10 @@ impl Zoc {
     fn refresh_sessions(&mut self) {
         if let Some(project) = self.data.current_project.clone() {
             self.send_command(Command::ListSessions {
-                project,
+                project: project.clone(),
                 archived: self.data.archived,
             });
+            self.send_command(Command::HasArchived { project });
         }
     }
 
@@ -828,7 +907,89 @@ impl Zoc {
         cx.notify();
     }
 
+    fn open_home(&mut self, cx: &mut Context<Self>) {
+        self.show_home = true;
+        self.show_connection = false;
+        self.show_session_actions = false;
+        cx.notify();
+    }
+
+    fn active_project_name(&self) -> String {
+        let directory = self.data.project_directory().unwrap_or("");
+        t::project_name(self.active_project(), directory)
+    }
+
+    fn active_project(&self) -> Option<&api::Project> {
+        self.data
+            .projects
+            .iter()
+            .find(|project| Some(&project.id.0) == self.data.current_project.as_ref())
+    }
+
+    fn toggle_working(&mut self, cx: &mut Context<Self>) {
+        self.data.prefs.working_expanded = !self.data.prefs.working_expanded;
+        self.data.prefs.save();
+        cx.notify();
+    }
+
+    fn toggle_recent(&mut self, cx: &mut Context<Self>) {
+        self.data.prefs.recent_expanded = !self.data.prefs.recent_expanded;
+        self.data.prefs.save();
+        cx.notify();
+    }
+
+    fn menu_session(&self) -> Option<api::Session> {
+        let id = self.menu_target.borrow().clone()?;
+        self.data
+            .sessions
+            .iter()
+            .find(|session| session.id.0 == id)
+            .cloned()
+    }
+
+    fn rename_menu_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(session) = self.menu_session() else {
+            return;
+        };
+        if self.data.current_session.as_ref() != Some(&session.id.0) {
+            self.switch_session(session.id.0.clone(), window, cx);
+        }
+        let title = session.title.unwrap_or_default();
+        self.rename
+            .update(cx, |state, cx| state.set_value(title, window, cx));
+        self.show_home = false;
+        self.show_session_actions = true;
+        cx.notify();
+    }
+
+    fn toggle_menu_read(&mut self, cx: &mut Context<Self>) {
+        let Some(session) = self.menu_session() else {
+            return;
+        };
+        if self.data.status(&session).is_unread() {
+            self.data.mark_read(&session);
+        } else {
+            self.data.mark_unread(&session);
+        }
+        cx.notify();
+    }
+
+    fn archive_menu_session(&mut self, archived: bool, cx: &mut Context<Self>) {
+        let Some(session) = self.menu_session() else {
+            return;
+        };
+        // Keep the open transcript until the session list confirms the change;
+        // a rejected archive must not make the current session disappear.
+        self.send_command(Command::Archive {
+            session: session.id.0.clone(),
+            archived,
+        });
+        cx.notify();
+    }
+
     fn open_selected(&mut self, id: String, cx: &mut Context<Self>) {
+        self.show_home = false;
+        self.show_connection = false;
         self.data.select_session(id.clone());
         self.rebuild_rows(cx);
         self.send_command(Command::LoadConversation {
@@ -839,27 +1000,78 @@ impl Zoc {
     }
 
     fn render_connection(&self, cx: &mut Context<Self>) -> AnyElement {
+        let connected = self.data.connected;
+        let status_color = if connected { t::SUCCESS } else { t::DANGER };
+        let status_text = if connected {
+            "Connected"
+        } else {
+            "Disconnected"
+        };
         v_flex()
-            .gap_3()
-            .p_4()
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .child(div().text_sm().font_bold().child("OpenCode Service"))
-            .child(Input::new(&self.server))
-            .child(Input::new(&self.password))
+            .gap(px(12.))
+            .p(px(16.))
+            .rounded(px(8.))
+            .bg(t::layer_01())
+            .border_1()
+            .border_color(t::border_muted())
             .child(
                 h_flex()
-                    .gap_2()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("OpenCode service"),
+                    )
+                    .child(
+                        h_flex()
+                            .gap(px(6.))
+                            .child(div().size(px(6.)).rounded(px(3.)).bg(rgb(status_color)))
+                            .child(
+                                div()
+                                    .text_size(px(12.))
+                                    .text_color(t::text_faint())
+                                    .child(status_text),
+                            ),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .gap(px(6.))
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(t::text_faint())
+                            .child("Endpoint"),
+                    )
+                    .child(Input::new(&self.server).small()),
+            )
+            .child(
+                v_flex()
+                    .gap(px(6.))
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(t::text_faint())
+                            .child("Password"),
+                    )
+                    .child(Input::new(&self.password).small()),
+            )
+            .child(
+                h_flex()
+                    .gap(px(8.))
                     .child(
                         Button::new("connect")
                             .primary()
-                            .label("Connect")
+                            .small()
+                            .label(if connected { "Reconnect" } else { "Connect" })
                             .on_click(cx.listener(|this, _, _, cx| this.connect(cx))),
                     )
                     .child(
                         Button::new("hide-connection")
                             .ghost()
-                            .label("Hide")
+                            .small()
+                            .label("Close")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.show_connection = false;
                                 cx.notify();
@@ -870,123 +1082,235 @@ impl Zoc {
     }
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
-        let muted = cx.theme().muted_foreground;
-        let border = cx.theme().border;
-        let surface = cx.theme().sidebar;
-        let mut groups = v_flex().gap_1().min_h_0();
-        let session_count = self.data.sessions.len();
-        for group in InboxGroup::ALL {
-            let entries = self.data.sorted_inbox(group, &self.filter);
-            if entries.is_empty() && group != InboxGroup::Recent {
-                continue;
+        let muted = t::text_muted();
+        let now = t::now_ms();
+
+        let nav_row = |id: &'static str,
+                       icon: &'static str,
+                       label: &'static str,
+                       enabled: bool|
+         -> gpui_kit::Stateful<gpui_kit::Div> {
+            div()
+                .id(id)
+                .h(px(28.))
+                .w_full()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(8.))
+                .px(px(8.))
+                .rounded(px(6.))
+                .cursor_pointer()
+                .text_size(px(13.))
+                .line_height(px(16.))
+                .text_color(if enabled {
+                    t::text_base()
+                } else {
+                    t::text_faint()
+                })
+                .hover(|style| style.bg(t::layer_02()))
+                .child(
+                    Icon::default()
+                        .data(icon.as_bytes())
+                        .size(px(16.))
+                        .text_color(if enabled {
+                            t::icon_muted()
+                        } else {
+                            t::text_faint()
+                        }),
+                )
+                .child(label)
+        };
+
+        let mut groups = v_flex().gap(px(2.)).min_h_0();
+        let mut total = 0usize;
+
+        if self.data.archived {
+            let mut archived: Vec<_> = self
+                .data
+                .sessions
+                .iter()
+                .filter(|session| {
+                    self.filter.is_empty()
+                        || session
+                            .title
+                            .as_deref()
+                            .unwrap_or("")
+                            .to_lowercase()
+                            .contains(&self.filter.to_lowercase())
+                })
+                .cloned()
+                .collect();
+            archived.sort_by(|a, b| b.time.updated.total_cmp(&a.time.updated));
+
+            groups = groups
+                .child(
+                    nav_row("inbox-back", t::ICON_ARCHIVE, "Back to Inbox", true)
+                        .on_click(cx.listener(|this, _, _, cx| this.toggle_archived(cx))),
+                )
+                .child(
+                    v_flex()
+                        .pt(px(6.))
+                        .pb(px(10.))
+                        .gap(px(8.))
+                        .child(section_label("Archived"))
+                        .child(
+                            v_flex().gap(px(2.)).children(
+                                archived
+                                    .iter()
+                                    .map(|session| self.render_inbox_card(session, true, now, cx)),
+                            ),
+                        ),
+                );
+        } else {
+            for group in [
+                InboxGroup::Attention,
+                InboxGroup::Unread,
+                InboxGroup::Recent,
+            ] {
+                let entries = self.data.sorted_inbox(group, &self.filter);
+                total += entries.len();
+                if entries.is_empty() {
+                    continue;
+                }
+
+                let (visible, more_label) = if group == InboxGroup::Recent {
+                    if self.data.prefs.recent_expanded {
+                        (entries.clone(), (entries.len() > 10).then_some("Show less"))
+                    } else {
+                        (
+                            entries.iter().take(10).cloned().collect(),
+                            (entries.len() > 10).then_some("Show more"),
+                        )
+                    }
+                } else {
+                    (entries.clone(), None)
+                };
+
+                groups = groups.child(
+                    v_flex()
+                        .pb(px(10.))
+                        .gap(px(8.))
+                        .child(section_label(group.title()))
+                        .child(
+                            v_flex().gap(px(2.)).children(
+                                visible
+                                    .iter()
+                                    .map(|session| self.render_inbox_card(session, false, now, cx)),
+                            ),
+                        )
+                        .when_some(more_label, |view, label| {
+                            view.child(
+                                div()
+                                    .id("recent-more")
+                                    .h(px(28.))
+                                    .w_full()
+                                    .flex()
+                                    .items_center()
+                                    .px(px(8.))
+                                    .rounded(px(6.))
+                                    .cursor_pointer()
+                                    .text_size(px(13.))
+                                    .text_color(muted)
+                                    .hover(|style| style.bg(t::layer_02()))
+                                    .on_click(cx.listener(|this, _, _, cx| this.toggle_recent(cx)))
+                                    .child(label),
+                            )
+                        }),
+                );
             }
-            let label = format!("{} · {}", group.title(), entries.len());
-            let collapsed = self.collapsed.contains(&group);
-            groups = groups.child(
-                v_flex()
-                    .child(
-                        div()
-                            .id(format!("group-{group:?}"))
-                            .px_3()
-                            .py_2()
-                            .text_xs()
-                            .font_semibold()
-                            .text_color(muted)
-                            .cursor_pointer()
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                if !this.collapsed.insert(group) {
-                                    this.collapsed.remove(&group);
-                                }
-                                cx.notify();
-                            }))
-                            .child(format!("{} {}", if collapsed { "▸" } else { "▾" }, label)),
-                    )
-                    .when(!collapsed, |view| {
-                        view.children(entries.into_iter().map(|session| {
-                            let id = session.id.0.clone();
-                            let selected = self.data.current_session.as_ref() == Some(&id);
-                            let title = session
-                                .title
-                                .clone()
-                                .unwrap_or_else(|| "Untitled session".into());
-                            let directory = session.location.directory.0.clone();
-                            let indicator = match self.data.classify(&session) {
-                                InboxGroup::Working => "●",
-                                InboxGroup::Attention => "!",
-                                InboxGroup::Unread => "●",
-                                InboxGroup::Recent => " ",
-                            };
-                            div()
-                                .id(format!("session-{id}"))
-                                .px_3()
-                                .py_2()
-                                .mx_1()
-                                .rounded_md()
-                                .when(selected, |r| r.bg(cx.theme().secondary))
-                                .hover(|s| s.bg(cx.theme().secondary))
-                                .cursor_pointer()
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.switch_session(id.clone(), window, cx)
-                                }))
-                                .child(
-                                    h_flex()
-                                        .gap_2()
-                                        .child(
-                                            div()
-                                                .w_3()
-                                                .text_xs()
-                                                .text_color(muted)
-                                                .child(indicator),
-                                        )
-                                        .child(
-                                            v_flex()
-                                                .flex_1()
-                                                .min_w_0()
-                                                .child(div().text_sm().truncate().child(title))
-                                                .child(
-                                                    div()
-                                                        .text_xs()
-                                                        .text_color(muted)
-                                                        .truncate()
-                                                        .child(directory),
-                                                ),
-                                        ),
-                                )
-                        }))
-                    }),
-            );
+
+            if total == 0
+                && self
+                    .data
+                    .sorted_inbox(InboxGroup::Working, &self.filter)
+                    .is_empty()
+            {
+                let label = if self.filter.is_empty() {
+                    "Sessions you work on will appear here"
+                } else {
+                    "No matching sessions"
+                };
+                groups = groups.child(
+                    div()
+                        .px(px(8.))
+                        .py(px(8.))
+                        .text_size(px(13.))
+                        .line_height(px(16.))
+                        .text_color(t::text_faint())
+                        .child(label),
+                );
+            }
+
+            if self.data.archived_available {
+                groups = groups.child(
+                    div().pt(px(12.)).child(
+                        nav_row("archived-sessions", t::ICON_ARCHIVE, "Archived", false)
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_archived(cx))),
+                    ),
+                );
+            }
         }
+
+        let working: Vec<_> = if self.data.archived {
+            Vec::new()
+        } else {
+            self.data.sorted_inbox(InboxGroup::Working, &self.filter)
+        };
+        let working_expanded = self.data.prefs.working_expanded;
+
         v_flex()
             .w(px(self.sidebar_width))
             .h_full()
-            .border_r_1()
-            .border_color(border)
-            .bg(surface)
+            .flex_shrink_0()
+            .bg(t::deep())
+            .pl(px(11.))
+            .pr(px(3.))
+            .pt(px(8.))
+            .pb(px(8.))
+            .gap(px(2.))
             .child(
-                v_flex()
-                    .p_3()
-                    .gap_2()
-                    .child(
-                        h_flex()
-                            .items_center()
-                            .justify_between()
-                            .child(div().font_bold().child("Inbox"))
-                            .child(
-                                Button::new("new-session")
-                                    .small()
-                                    .ghost()
-                                    .label("+ New")
-                                    .on_click(cx.listener(|this, _, _, cx| this.new_session(cx))),
-                            ),
-                    )
-                    .child(Input::new(&self.search))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(muted)
-                            .child(format!("{} sessions", session_count)),
-                    ),
+                nav_row("home", t::ICON_GRID_PLUS, "Home", true)
+                    .when(self.show_home, |row| row.bg(t::layer_02()))
+                    .on_click(cx.listener(|this, _, _, cx| this.open_home(cx))),
             )
+            .child(
+                nav_row("search-sessions", t::ICON_SEARCH, "Search sessions", false).on_click(
+                    cx.listener(|this, _, window, cx| {
+                        this.show_search = !this.show_search;
+                        if this.show_search {
+                            this.search.update(cx, |state, cx| state.focus(window, cx));
+                        } else {
+                            this.filter.clear();
+                            this.search
+                                .update(cx, |state, cx| state.set_value("", window, cx));
+                        }
+                        cx.notify();
+                    }),
+                ),
+            )
+            .when(self.show_search, |view| {
+                view.child(
+                    div().px(px(2.)).pb(px(4.)).child(
+                        div()
+                            .h(px(30.))
+                            .w_full()
+                            .flex()
+                            .items_center()
+                            .rounded(px(6.))
+                            .bg(t::layer_01())
+                            .border_1()
+                            .border_color(t::border_muted())
+                            .child(
+                                Input::new(&self.search)
+                                    .appearance(false)
+                                    .bordered(false)
+                                    .small(),
+                            ),
+                    ),
+                )
+            })
+            .child(div().h(px(16.)).w_full())
             .child(
                 div()
                     .flex_1()
@@ -994,103 +1318,486 @@ impl Zoc {
                     .overflow_y_scrollbar()
                     .child(groups),
             )
-            .child(
-                v_flex()
-                    .p_3()
-                    .gap_2()
-                    .border_t_1()
-                    .border_color(border)
-                    .child(
-                        h_flex()
-                            .gap_1()
-                            .child(
-                                Button::new("archive-toggle")
-                                    .ghost()
-                                    .small()
-                                    .label(if self.data.archived {
-                                        "← Inbox"
-                                    } else {
-                                        "Archived"
-                                    })
-                                    .on_click(
-                                        cx.listener(|this, _, _, cx| this.toggle_archived(cx)),
-                                    ),
-                            )
-                            .child(
-                                Button::new("reload-sessions")
-                                    .ghost()
-                                    .small()
-                                    .label("Refresh")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.refresh_sessions();
-                                        cx.notify();
-                                    })),
-                            ),
-                    )
-                    .child(
-                        h_flex()
-                            .gap_1()
-                            .items_center()
-                            .child(div().text_xs().text_color(muted).child("Width"))
-                            .child(
-                                Button::new("sidebar-shrink")
-                                    .small()
-                                    .ghost()
-                                    .label("−")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.sidebar_width = (this.sidebar_width - 30.).max(220.);
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                Button::new("sidebar-grow")
-                                    .small()
-                                    .ghost()
-                                    .label("+")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.sidebar_width = (this.sidebar_width + 30.).min(520.);
-                                        cx.notify();
-                                    })),
-                            ),
-                    ),
-            )
+            .when(!working.is_empty(), |view| {
+                view.child(
+                    v_flex()
+                        .flex_shrink_0()
+                        .max_h(relative(0.4))
+                        .min_h_0()
+                        .gap(px(8.))
+                        .pt(px(7.))
+                        .child(div().h(px(1.)).w_full().bg(t::border_muted()))
+                        .child(
+                            h_flex()
+                                .id("working-header")
+                                .h(px(24.))
+                                .w_full()
+                                .gap(px(6.))
+                                .px(px(8.))
+                                .rounded(px(6.))
+                                .cursor_pointer()
+                                .text_size(px(13.))
+                                .line_height(px(16.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(muted)
+                                .hover(|style| style.text_color(t::text_base()).bg(t::layer_02()))
+                                .on_click(cx.listener(|this, _, _, cx| this.toggle_working(cx)))
+                                .child(
+                                    Icon::default()
+                                        .data(t::ICON_TRIANGLE_DOWN.as_bytes())
+                                        .size(px(12.))
+                                        .text_color(t::text_muted())
+                                        .when(!working_expanded, |icon| {
+                                            icon.rotate(gpui_kit::radians(
+                                                std::f32::consts::FRAC_PI_2,
+                                            ))
+                                        }),
+                                )
+                                .child("Working"),
+                        )
+                        .when(working_expanded, |view| {
+                            view.child(div().min_h_0().overflow_y_scrollbar().child(
+                                v_flex().gap(px(2.)).children(working.iter().map(|session| {
+                                    self.render_inbox_card(session, false, now, cx)
+                                })),
+                            ))
+                        }),
+                )
+            })
             .into_any_element()
     }
 
-    fn render_projects(&self, cx: &mut Context<Self>) -> AnyElement {
-        let muted = cx.theme().muted_foreground;
-        h_flex()
-            .gap_2()
-            .items_center()
-            .children(self.data.projects.iter().map(|project| {
-                let id = project.id.0.clone();
-                let active = self.data.current_project.as_ref() == Some(&id);
-                let label = project.name.clone().unwrap_or_else(|| {
-                    project
-                        .canonical
-                        .as_str()
-                        .rsplit('/')
-                        .next()
-                        .unwrap_or("Project")
-                        .to_owned()
-                });
-                Button::new(format!("project-{}", id))
-                    .small()
-                    .when(active, |b| b.selected(true))
-                    .label(label)
-                    .on_click(
-                        cx.listener(move |this, _, _, cx| this.switch_project(id.clone(), cx)),
-                    )
-            }))
-            .child(
-                div().text_xs().text_color(muted).child(
-                    self.data
-                        .connection
-                        .as_ref()
-                        .map(|c| c.url.clone())
-                        .unwrap_or_else(|| "Disconnected".into()),
-                ),
+    fn render_inbox_card(
+        &self,
+        session: &api::Session,
+        archived: bool,
+        now: f64,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let id = session.id.0.clone();
+        let selected = self.data.current_session.as_ref() == Some(&id);
+        let status = self.data.status(session);
+        let project = self.active_project();
+        let directory = session.location.directory.0.clone();
+        let project_name = t::project_name(project, &directory);
+        let tone = t::project_tone(project);
+        let title = session
+            .title
+            .clone()
+            .filter(|title| !title.trim().is_empty())
+            .unwrap_or_else(|| "Session".into());
+        let age = t::age_label(now, session_since(status, session), status.is_working());
+        let target = self.menu_target.clone();
+        let menu_id = id.clone();
+        let unread = status.is_unread();
+
+        let has_cue = status.is_working() || status.is_attention() || unread;
+        let status_cue: AnyElement = if status.is_working() {
+            gpui_kit::component::spinner::Spinner::new()
+                .small()
+                .icon(
+                    Icon::default()
+                        .data(t::ICON_ACTIVITY_RING.as_bytes())
+                        .size(px(14.)),
+                )
+                .color(t::icon_muted())
+                .into_any_element()
+        } else if status.is_attention() || unread {
+            let color = match status {
+                InboxStatus::Approval | InboxStatus::Input => t::warning(),
+                InboxStatus::Failed => t::danger(),
+                _ => t::accent(),
+            };
+            div()
+                .size(px(7.))
+                .rounded(px(3.5))
+                .bg(color)
+                .into_any_element()
+        } else {
+            div().size(px(7.)).into_any_element()
+        };
+
+        let card = v_flex()
+            .id(format!("inbox-card-{id}"))
+            .h(px(54.))
+            .w_full()
+            .flex_shrink_0()
+            .p(px(8.))
+            .gap(px(6.))
+            .rounded(px(6.))
+            .cursor_pointer()
+            .when(archived && !selected, |card| card.opacity(0.5))
+            .when(selected, |card| card.bg(t::pressed()))
+            .when(!selected, |card| card.hover(|style| style.bg(t::hover())))
+            .when(selected, |card| card.hover(|style| style.bg(t::pressed())))
+            .on_click(
+                cx.listener(move |this, _, window, cx| this.switch_session(id.clone(), window, cx)),
             )
+            .context_menu(move |menu, _, _| {
+                *target.borrow_mut() = Some(menu_id.clone());
+                let archive_action = if archived {
+                    Box::new(UnarchiveMenuSession) as Box<dyn Action>
+                } else {
+                    Box::new(ArchiveMenuSession) as Box<dyn Action>
+                };
+                menu.menu("Rename", Box::new(RenameMenuSession))
+                    .menu(
+                        if unread {
+                            "Mark as read"
+                        } else {
+                            "Mark as unread"
+                        },
+                        Box::new(ToggleMenuRead),
+                    )
+                    .separator()
+                    .menu(
+                        if archived { "Unarchive" } else { "Archive" },
+                        archive_action,
+                    )
+            })
+            .child(
+                h_flex()
+                    .h(px(16.))
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .size(px(16.))
+                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(4.))
+                            .bg(rgb(tone.background))
+                            .border_1()
+                            .border_color(rgb(tone.border))
+                            .text_size(px(11.))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(rgb(0xffffff))
+                            .child(t::initial(&project_name)),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(13.))
+                            .line_height(px(16.))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(t::text_base())
+                            .child(title),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .h(px(16.))
+                    .pl(px(24.))
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(13.))
+                            .line_height(px(16.))
+                            .text_color(t::text_muted())
+                            .child(project_name),
+                    )
+                    .child(
+                        h_flex()
+                            .flex_shrink_0()
+                            .gap(px(6.))
+                            .when(has_cue, |row| row.child(status_cue))
+                            .when(!age.is_empty(), |row| {
+                                row.child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .line_height(px(16.))
+                                        .text_color(t::text_faint())
+                                        .child(age),
+                                )
+                            }),
+                    ),
+            );
+
+        card.into_any_element()
+    }
+
+    fn render_home(&self, cx: &mut Context<Self>) -> AnyElement {
+        let project = self.active_project();
+        let directory = project
+            .map(|project| project.canonical.as_str().to_owned())
+            .unwrap_or_default();
+        let project_name = t::project_name(project, &directory);
+        let tone = t::project_tone(project);
+
+        let mut content = v_flex()
+            .w_full()
+            .max_w(px(1080.))
+            .mx_auto()
+            .p(px(24.))
+            .gap(px(24.));
+
+        content = content.child(
+            h_flex()
+                .justify_between()
+                .child(
+                    v_flex()
+                        .gap(px(4.))
+                        .child(
+                            div()
+                                .text_size(px(20.))
+                                .line_height(px(24.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child("Home"),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(13.))
+                                .text_color(t::text_muted())
+                                .child("Sessions you work on will appear in the Inbox."),
+                        ),
+                )
+                .child(
+                    Button::new("home-new-session")
+                        .primary()
+                        .small()
+                        .label("New session")
+                        .on_click(cx.listener(|this, _, _, cx| this.new_session(cx))),
+                ),
+        );
+
+        if self.show_connection {
+            content = content.child(
+                div()
+                    .max_w(px(520.))
+                    .w_full()
+                    .child(self.render_connection(cx)),
+            );
+        }
+
+        if self.data.projects.is_empty() {
+            content = content.child(
+                v_flex()
+                    .gap(px(12.))
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Connect an OpenCode service"),
+                    )
+                    .child(div().text_size(px(13.)).text_color(t::text_muted()).child(
+                        "ZOC connects to a running OpenCode service. It does not start one.",
+                    ))
+                    .child(self.render_connection(cx)),
+            );
+
+            return div()
+                .size_full()
+                .overflow_y_scrollbar()
+                .child(content)
+                .into_any_element();
+        }
+
+        let mut projects = v_flex().gap(px(2.));
+        for item in &self.data.projects {
+            let id = item.id.0.clone();
+            let active = self.data.current_project.as_ref() == Some(&id);
+            let name = t::project_name(Some(item), item.canonical.as_str());
+            let item_tone = t::project_tone(Some(item));
+            projects = projects.child(
+                h_flex()
+                    .id(format!("home-project-{id}"))
+                    .h(px(40.))
+                    .w_full()
+                    .gap(px(8.))
+                    .px(px(8.))
+                    .rounded(px(6.))
+                    .cursor_pointer()
+                    .when(active, |row| row.bg(t::layer_01()))
+                    .hover(|style| style.bg(t::layer_01()))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.show_home = true;
+                        this.switch_project(id.clone(), cx);
+                    }))
+                    .child(
+                        div()
+                            .size(px(16.))
+                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(4.))
+                            .bg(rgb(item_tone.background))
+                            .border_1()
+                            .border_color(rgb(item_tone.border))
+                            .text_size(px(11.))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(rgb(0xffffff))
+                            .child(t::initial(&name)),
+                    )
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_size(px(13.))
+                                    .line_height(px(16.))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(name),
+                            )
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_size(px(12.))
+                                    .line_height(px(16.))
+                                    .text_color(t::text_faint())
+                                    .child(item.canonical.as_str().to_owned()),
+                            ),
+                    ),
+            );
+        }
+
+        let mut sessions: Vec<_> = self.data.sessions.iter().collect();
+        sessions.sort_by(|a, b| b.time.updated.total_cmp(&a.time.updated));
+        let has_sessions = !sessions.is_empty();
+        let now = t::now_ms();
+
+        let mut session_rows = v_flex().gap(px(2.));
+        for session in sessions.into_iter().take(8) {
+            let id = session.id.0.clone();
+            let title = session
+                .title
+                .clone()
+                .filter(|title| !title.trim().is_empty())
+                .unwrap_or_else(|| "Session".into());
+            let age = t::age_label(
+                now,
+                session_since(self.data.status(session), session),
+                self.data.status(session).is_working(),
+            );
+            session_rows = session_rows.child(
+                h_flex()
+                    .id(format!("home-session-{id}"))
+                    .h(px(40.))
+                    .w_full()
+                    .gap(px(8.))
+                    .px(px(8.))
+                    .rounded(px(6.))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(t::layer_01()))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.switch_session(id.clone(), window, cx)
+                    }))
+                    .child(
+                        div()
+                            .size(px(16.))
+                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(4.))
+                            .bg(rgb(tone.background))
+                            .border_1()
+                            .border_color(rgb(tone.border))
+                            .text_size(px(11.))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(rgb(0xffffff))
+                            .child(t::initial(&project_name)),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(13.))
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .text_size(px(12.))
+                            .text_color(t::text_faint())
+                            .child(age),
+                    ),
+            );
+        }
+
+        if !has_sessions {
+            session_rows = session_rows.child(
+                div()
+                    .px(px(8.))
+                    .py(px(12.))
+                    .text_size(px(13.))
+                    .text_color(t::text_faint())
+                    .child("No sessions yet"),
+            );
+        }
+
+        content = content.child(
+            h_flex()
+                .items_start()
+                .gap(px(32.))
+                .child(
+                    v_flex()
+                        .w(px(280.))
+                        .flex_shrink_0()
+                        .gap(px(12.))
+                        .child(section_label("Projects"))
+                        .child(projects),
+                )
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .gap(px(12.))
+                        .child(section_label("Sessions"))
+                        .child(session_rows),
+                ),
+        );
+
+        content = content.child(
+            h_flex()
+                .pt(px(12.))
+                .gap(px(8.))
+                .child(
+                    div()
+                        .size(px(6.))
+                        .rounded(px(3.))
+                        .bg(rgb(if self.data.connected {
+                            t::SUCCESS
+                        } else {
+                            t::DANGER
+                        })),
+                )
+                .child(
+                    div().text_size(px(12.)).text_color(t::text_faint()).child(
+                        self.data
+                            .connection
+                            .as_ref()
+                            .map(|connection| connection.url.clone())
+                            .unwrap_or_else(|| "Not connected".into()),
+                    ),
+                )
+                .child(div().flex_1())
+                .child(
+                    Button::new("home-connection")
+                        .small()
+                        .ghost()
+                        .label("Connection settings")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.show_connection = !this.show_connection;
+                            cx.notify();
+                        })),
+                ),
+        );
+
+        div()
+            .size_full()
+            .overflow_y_scrollbar()
+            .child(content)
             .into_any_element()
     }
 
@@ -1098,16 +1805,10 @@ impl Zoc {
         row: MessageRow,
         owner: Entity<Zoc>,
         reasoning_visible: bool,
-        cx: &mut App,
+        _cx: &mut App,
     ) -> AnyElement {
-        let muted = cx.theme().muted_foreground;
-        let border = cx.theme().border;
-        let role_label = match row.role.as_str() {
-            "user" => "You",
-            "assistant" => "OpenCode",
-            other => other,
-        };
-        let mut body = v_flex().w_full().min_w_0().gap_2();
+        let user = row.role == "user";
+        let mut body = v_flex().w_full().min_w_0().gap(px(8.));
         for (index, part) in row.parts.into_iter().enumerate() {
             let view: AnyElement = match part {
                 Part::Text { state, reasoning } => {
@@ -1117,8 +1818,15 @@ impl Zoc {
                     v_flex()
                         .w_full()
                         .min_w_0()
-                        .when(reasoning, |v| {
-                            v.child(div().text_xs().text_color(muted).child("Thinking"))
+                        .gap(px(4.))
+                        .when(reasoning, |view| {
+                            view.child(
+                                div()
+                                    .text_size(px(12.))
+                                    .line_height(px(16.))
+                                    .text_color(t::text_faint())
+                                    .child("Thinking"),
+                            )
                         })
                         .child(TextView::new(&state).selectable(true))
                         .into_any_element()
@@ -1130,23 +1838,35 @@ impl Zoc {
                     detail,
                     file,
                 } => {
-                    let mut v = v_flex()
-                        .gap_1()
+                    let mut card = v_flex()
+                        .w_full()
+                        .gap(px(6.))
+                        .rounded(px(8.))
                         .border_1()
-                        .border_color(border)
-                        .rounded_md()
-                        .p_2()
-                        .bg(cx.theme().secondary)
+                        .border_color(t::border_muted())
+                        .bg(t::layer_01())
+                        .p(px(10.))
                         .child(
                             h_flex()
-                                .gap_2()
-                                .items_center()
-                                .child(div().text_xs().font_semibold().child(name))
-                                .child(div().text_xs().text_color(muted).child(status)),
+                                .gap(px(8.))
+                                .child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .line_height(px(16.))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .child(name),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .line_height(px(16.))
+                                        .text_color(t::text_faint())
+                                        .child(status),
+                                ),
                         );
                     if let Some(file) = file {
                         let owner = owner.clone();
-                        v = v.child(
+                        card = card.child(
                             Button::new(format!("file-{id}-{index}"))
                                 .small()
                                 .ghost()
@@ -1160,43 +1880,68 @@ impl Zoc {
                         );
                     }
                     if !detail.is_empty() {
-                        v = v.child(div().text_xs().text_color(muted).child(detail));
+                        card = card.child(
+                            div()
+                                .text_size(px(12.))
+                                .line_height(px(16.))
+                                .text_color(t::text_faint())
+                                .child(detail),
+                        );
                     }
-                    v.into_any_element()
+                    card.into_any_element()
                 }
                 Part::Other(label) => div()
-                    .text_xs()
-                    .text_color(muted)
+                    .text_size(px(12.))
+                    .line_height(px(16.))
+                    .text_color(t::text_faint())
                     .child(label)
                     .into_any_element(),
             };
             body = body.child(view);
         }
         if let Some(error) = row.error {
-            body = body.child(div().text_sm().text_color(cx.theme().danger).child(error));
+            body = body.child(
+                div()
+                    .text_size(px(13.))
+                    .line_height(px(20.))
+                    .text_color(t::danger())
+                    .child(error),
+            );
         }
+
+        let content = if user {
+            v_flex()
+                .w_full()
+                .items_end()
+                .child(
+                    div()
+                        .max_w(px(560.))
+                        .rounded(px(10.))
+                        .bg(t::layer_02())
+                        .px(px(12.))
+                        .py(px(8.))
+                        .text_size(px(14.))
+                        .line_height(px(20.))
+                        .child(body),
+                )
+                .into_any_element()
+        } else {
+            body.into_any_element()
+        };
+
         v_flex()
             .id(format!("message-{}", row.id))
-            .px_5()
-            .py_4()
-            .border_b_1()
-            .border_color(border)
-            .gap_2()
+            .px(px(16.))
+            .py(px(8.))
+            .gap(px(8.))
             .w_full()
             .min_w_0()
-            .child(
-                div()
-                    .text_xs()
-                    .font_semibold()
-                    .text_color(muted)
-                    .child(role_label.to_string()),
-            )
-            .child(body)
+            .child(content)
             .into_any_element()
     }
 
     fn render_requests(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut view = v_flex().gap_2();
+        let mut view = v_flex().w_full().max_w(px(720.)).mx_auto().gap(px(8.));
         for request in self.data.active_permissions() {
             let session = request["sessionID"].as_str().unwrap_or("").to_owned();
             let id = request["id"].as_str().unwrap_or("").to_owned();
@@ -1210,20 +1955,42 @@ impl Zoc {
                 .collect();
             view = view.child(
                 v_flex()
-                    .gap_2()
+                    .w_full()
+                    .gap(px(8.))
                     .border_1()
-                    .border_color(cx.theme().warning)
-                    .rounded_md()
-                    .p_3()
+                    .border_color(t::warning().opacity(0.35))
+                    .rounded(px(10.))
+                    .bg(t::warning().opacity(0.06))
+                    .p(px(12.))
                     .child(
-                        div()
-                            .font_semibold()
-                            .text_sm()
-                            .child(format!("Approval required · {action}")),
+                        h_flex()
+                            .gap(px(8.))
+                            .child(div().size(px(6.)).rounded(px(3.)).bg(t::warning()))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_size(px(13.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child("Permission required"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(12.))
+                                    .text_color(t::text_faint())
+                                    .child(action.to_owned()),
+                            ),
                     )
-                    .child(div().text_xs().child(resources.join(", ")))
+                    .when(!resources.is_empty(), |card| {
+                        card.child(
+                            div()
+                                .text_size(px(12.))
+                                .line_height(px(16.))
+                                .text_color(t::text_muted())
+                                .child(resources.join(", ")),
+                        )
+                    })
                     .child(
-                        h_flex().gap_2().children(
+                        h_flex().gap(px(6.)).children(
                             [
                                 ("once", "Allow once"),
                                 ("always", "Always allow"),
@@ -1252,11 +2019,8 @@ impl Zoc {
         for form in self.data.active_forms() {
             let session = form["sessionID"].as_str().unwrap_or("").to_owned();
             let id = form["id"].as_str().unwrap_or("").to_owned();
-            let title = form["title"]
-                .as_str()
-                .unwrap_or("User input required")
-                .to_owned();
-            let mut fields = v_flex().gap_1();
+            let title = form["title"].as_str().unwrap_or("Question").to_owned();
+            let mut fields = v_flex().gap(px(4.));
             if let Some(items) = form["fields"].as_array() {
                 for field in items {
                     let key = field["key"].as_str().unwrap_or("field");
@@ -1264,7 +2028,9 @@ impl Zoc {
                     let typ = field["type"].as_str().unwrap_or("string");
                     fields = fields.child(
                         div()
-                            .text_xs()
+                            .text_size(px(12.))
+                            .line_height(px(16.))
+                            .text_color(t::text_muted())
                             .child(format!("{field_title} ({key}: {typ})")),
                     );
                     if let Some(options) = field["options"].as_array() {
@@ -1273,19 +2039,43 @@ impl Zoc {
                             .map(|item| format!("{}: {}", item["value"], item["label"]))
                             .collect::<Vec<_>>()
                             .join(" · ");
-                        fields = fields.child(div().text_xs().child(opts));
+                        fields = fields.child(
+                            div()
+                                .text_size(px(12.))
+                                .text_color(t::text_faint())
+                                .child(opts),
+                        );
                     }
                 }
             }
             view =
                 view.child(
                     v_flex()
-                        .gap_2()
+                        .w_full()
+                        .gap(px(8.))
                         .border_1()
-                        .border_color(cx.theme().warning)
-                        .rounded_md()
-                        .p_3()
-                        .child(div().font_semibold().text_sm().child(title))
+                        .border_color(t::warning().opacity(0.35))
+                        .rounded(px(10.))
+                        .bg(t::warning().opacity(0.06))
+                        .p(px(12.))
+                        .child(
+                            h_flex()
+                                .gap(px(8.))
+                                .child(div().size(px(6.)).rounded(px(3.)).bg(t::warning()))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .text_size(px(13.))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child(title),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .text_color(t::text_faint())
+                                        .child("Question"),
+                                ),
+                        )
                         .child(fields)
                         .child(Textarea::new(&self.form_json))
                         .child(
@@ -1400,80 +2190,128 @@ impl Zoc {
     }
 
     fn render_composer(&self, cx: &mut Context<Self>) -> AnyElement {
-        let muted = cx.theme().muted_foreground;
+        let model_label = self
+            .data
+            .selected_model
+            .as_ref()
+            .and_then(|selected| {
+                self.data
+                    .models
+                    .iter()
+                    .find(|model| {
+                        model.model_id == selected.id && model.provider_id == selected.provider_id
+                    })
+                    .map(|model| model.name.clone())
+            })
+            .or_else(|| self.data.selected_model.as_ref().map(model_display))
+            .unwrap_or_else(|| "Model".into());
+        let working = self
+            .data
+            .active_session()
+            .map(|session| self.data.status(session).is_working())
+            .unwrap_or(false);
+        let has_variants = self
+            .data
+            .selected_model
+            .as_ref()
+            .and_then(|selected| {
+                self.data.models.iter().find(|model| {
+                    model.model_id == selected.id && model.provider_id == selected.provider_id
+                })
+            })
+            .is_some_and(|model| !model.variants.is_empty());
+
         v_flex()
-            .p_3()
-            .gap_2()
-            .border_t_1()
-            .border_color(cx.theme().border)
+            .px(px(16.))
+            .pb(px(16.))
+            .pt(px(8.))
+            .gap(px(8.))
             .child(self.render_requests(cx))
-            .child(Textarea::new(&self.composer).aria_label("OpenCode prompt"))
             .child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
+                v_flex()
+                    .w_full()
+                    .max_w(px(720.))
+                    .mx_auto()
+                    .gap(px(4.))
+                    .rounded(px(12.))
+                    .bg(t::layer_01())
+                    .border_1()
+                    .border_color(t::border_muted())
+                    .p(px(8.))
                     .child(
-                        Button::new("choose-agent")
-                            .small()
-                            .ghost()
-                            .label(self.data.selected_agent.as_deref().unwrap_or("Agent"))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.show_agents = !this.show_agents;
-                                this.show_models = false;
-                                cx.notify();
-                            })),
+                        Textarea::new(&self.composer)
+                            .appearance(false)
+                            .bordered(false)
+                            .aria_label("OpenCode prompt"),
                     )
                     .child(
-                        Button::new("choose-model")
-                            .small()
-                            .ghost()
-                            .label(
-                                self.data
-                                    .selected_model
-                                    .as_ref()
-                                    .map(model_display)
-                                    .unwrap_or_else(|| "Model".into()),
+                        h_flex()
+                            .gap(px(2.))
+                            .items_center()
+                            .child(
+                                Button::new("choose-agent")
+                                    .small()
+                                    .ghost()
+                                    .label(self.data.selected_agent.as_deref().unwrap_or("Agent"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.show_agents = !this.show_agents;
+                                        this.show_models = false;
+                                        cx.notify();
+                                    })),
                             )
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.show_models = !this.show_models;
-                                this.show_agents = false;
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new("choose-variant")
-                            .small()
-                            .ghost()
-                            .label("Variant")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.show_variants = !this.show_variants;
-                                cx.notify();
-                            })),
-                    )
-                    .child(div().flex_1())
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(muted)
-                            .child("Ctrl+Enter to send"),
-                    )
-                    .child(
-                        Button::new("stop")
-                            .small()
-                            .outline()
-                            .label("Stop")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.interrupt();
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new("send")
-                            .small()
-                            .primary()
-                            .label("Send")
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.send_prompt(window, cx)),
+                            .child(
+                                Button::new("choose-model")
+                                    .small()
+                                    .ghost()
+                                    .label(model_label)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.show_models = !this.show_models;
+                                        this.show_agents = false;
+                                        cx.notify();
+                                    })),
+                            )
+                            .when(has_variants, |row| {
+                                row.child(
+                                    Button::new("choose-variant")
+                                        .small()
+                                        .ghost()
+                                        .label("Variant")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.show_variants = !this.show_variants;
+                                            cx.notify();
+                                        })),
+                                )
+                            })
+                            .child(div().flex_1())
+                            .when(working, |row| {
+                                row.child(
+                                    Button::new("stop")
+                                        .small()
+                                        .ghost()
+                                        .tooltip("Stop")
+                                        .icon(
+                                            Icon::default()
+                                                .data(t::ICON_STOP.as_bytes())
+                                                .size(px(12.)),
+                                        )
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.interrupt();
+                                            cx.notify();
+                                        })),
+                                )
+                            })
+                            .child(
+                                Button::new("send")
+                                    .small()
+                                    .primary()
+                                    .icon(
+                                        Icon::default()
+                                            .data(t::ICON_ARROW_UP.as_bytes())
+                                            .size(px(14.)),
+                                    )
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.send_prompt(window, cx)
+                                    })),
                             ),
                     ),
             )
@@ -1653,12 +2491,31 @@ impl Zoc {
     }
 
     fn render_central(&self, cx: &mut Context<Self>) -> AnyElement {
-        let muted = cx.theme().muted_foreground;
+        if self.show_home {
+            return v_flex()
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .rounded(px(10.))
+                .overflow_hidden()
+                .bg(t::base())
+                .border_1()
+                .border_color(t::border_muted())
+                .child(self.render_home(cx))
+                .into_any_element();
+        }
+
         let current = self.data.active_session();
-        let title = current
-            .and_then(|s| s.title.clone())
-            .unwrap_or_else(|| "Select a session".into());
         let has_session = self.data.current_session.is_some();
+        let title = current
+            .and_then(|session| session.title.clone())
+            .filter(|title| !title.trim().is_empty())
+            .unwrap_or_else(|| "Session".into());
+        let project_name = self.active_project_name();
+        let tone = t::project_tone(self.active_project());
+        let working = current
+            .map(|session| self.data.status(session).is_working())
+            .unwrap_or(false);
         let rows = self.rows.clone();
         let owner = cx.entity().clone();
         let reasoning_visible = self.show_reasoning;
@@ -1673,120 +2530,193 @@ impl Zoc {
                 }
             },
         );
-        v_flex()
+
+        let mut panel = v_flex()
             .flex_1()
             .min_w_0()
             .h_full()
-            .child(
-                h_flex()
-                    .h(px(52.))
-                    .items_center()
-                    .gap_2()
-                    .px_4()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .child(
-                        v_flex()
-                            .min_w_0()
-                            .flex_1()
-                            .child(div().font_semibold().truncate().child(title))
-                            .child(
-                                div().text_xs().text_color(muted).truncate().child(
-                                    current
-                                        .map(|s| s.location.directory.0.clone())
-                                        .unwrap_or_else(|| "Choose a project".into()),
+            .rounded(px(10.))
+            .overflow_hidden()
+            .bg(t::base())
+            .border_1()
+            .border_color(t::border_muted());
+
+        if has_session {
+            panel = panel
+                .child(
+                    h_flex()
+                        .h(px(48.))
+                        .flex_shrink_0()
+                        .items_center()
+                        .gap(px(6.))
+                        .px(px(16.))
+                        .child(
+                            h_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .gap(px(6.))
+                                .child(
+                                    div()
+                                        .size(px(16.))
+                                        .flex_shrink_0()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .rounded(px(4.))
+                                        .bg(rgb(tone.background))
+                                        .border_1()
+                                        .border_color(rgb(tone.border))
+                                        .text_size(px(11.))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(rgb(0xffffff))
+                                        .child(t::initial(&project_name)),
+                                )
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_size(px(13.))
+                                        .text_color(t::text_faint())
+                                        .child(project_name),
+                                )
+                                .child(
+                                    div()
+                                        .flex_shrink_0()
+                                        .text_size(px(13.))
+                                        .text_color(t::text_faint())
+                                        .child("/"),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_size(px(14.))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .child(title),
                                 ),
-                            ),
-                    )
-                    .child(
-                        Button::new("reasoning")
-                            .small()
-                            .ghost()
-                            .label(if reasoning_visible {
-                                "Hide thinking"
-                            } else {
-                                "Thinking"
-                            })
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.show_reasoning = !this.show_reasoning;
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new("changes")
-                            .small()
-                            .ghost()
-                            .label("Changes")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.request_changes();
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new("preview-toggle")
-                            .small()
-                            .ghost()
-                            .label("Preview")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.show_preview = !this.show_preview;
-                                cx.notify();
-                            })),
-                    )
-                    .when(has_session, |bar| {
-                        bar.child(
+                        )
+                        .when(working, |row| {
+                            row.child(
+                                gpui_kit::component::spinner::Spinner::new()
+                                    .small()
+                                    .color(t::icon_muted()),
+                            )
+                        })
+                        .child(
+                            Button::new("reasoning")
+                                .small()
+                                .ghost()
+                                .tooltip(if reasoning_visible {
+                                    "Hide thinking"
+                                } else {
+                                    "Show thinking"
+                                })
+                                .icon(Icon::default().data(t::ICON_EYE.as_bytes()).size(px(16.)))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.show_reasoning = !this.show_reasoning;
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            Button::new("changes")
+                                .small()
+                                .ghost()
+                                .tooltip("Changes")
+                                .icon(Icon::default().data(t::ICON_DIFF.as_bytes()).size(px(16.)))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.request_changes();
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            Button::new("preview-toggle")
+                                .small()
+                                .ghost()
+                                .tooltip("Preview")
+                                .icon(Icon::default().data(t::ICON_FILE.as_bytes()).size(px(16.)))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.show_preview = !this.show_preview;
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
                             Button::new("session-actions")
                                 .small()
                                 .ghost()
-                                .label("···")
+                                .tooltip("Session actions")
+                                .icon(
+                                    Icon::default()
+                                        .data(t::ICON_ELLIPSIS.as_bytes())
+                                        .size(px(16.)),
+                                )
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.show_session_actions = !this.show_session_actions;
                                     let title = this
                                         .data
                                         .active_session()
-                                        .and_then(|s| s.title.clone())
+                                        .and_then(|session| session.title.clone())
                                         .unwrap_or_default();
                                     this.rename
                                         .update(cx, |state, cx| state.set_value(title, window, cx));
                                     cx.notify();
                                 })),
-                        )
-                    }),
-            )
-            .when(self.show_session_actions && has_session, |view| {
-                view.child(self.render_session_actions(cx))
-            })
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .when(has_session, |view| view.child(transcript))
-                    .when(!has_session, |view| {
-                        view.child(
-                            v_flex()
-                                .size_full()
-                                .items_center()
-                                .justify_center()
-                                .gap_3()
-                                .child(div().font_semibold().child("Ready to work"))
-                                .child(
-                                    div()
-                                        .text_sm()
-                                        .text_color(muted)
-                                        .child("Open an existing session or create a new one."),
-                                )
-                                .child(
-                                    Button::new("start")
-                                        .primary()
-                                        .label("New session")
-                                        .on_click(
-                                            cx.listener(|this, _, _, cx| this.new_session(cx)),
-                                        ),
-                                ),
-                        )
-                    }),
-            )
-            .when(has_session, |view| view.child(self.render_composer(cx)))
-            .into_any_element()
+                        ),
+                )
+                .when(self.show_session_actions, |view| {
+                    view.child(self.render_session_actions(cx))
+                })
+                .child(
+                    div().flex_1().min_h_0().w_full().child(
+                        div()
+                            .size_full()
+                            .max_w(px(760.))
+                            .mx_auto()
+                            .child(transcript),
+                    ),
+                )
+                .child(self.render_composer(cx));
+        } else {
+            panel = panel.child(
+                v_flex()
+                    .size_full()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(12.))
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("No session selected"),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .text_color(t::text_muted())
+                            .child("Choose a session from the Inbox or start a new one."),
+                    )
+                    .child(
+                        h_flex()
+                            .gap(px(8.))
+                            .child(
+                                Button::new("empty-home")
+                                    .small()
+                                    .ghost()
+                                    .label("Home")
+                                    .on_click(cx.listener(|this, _, _, cx| this.open_home(cx))),
+                            )
+                            .child(
+                                Button::new("empty-new")
+                                    .small()
+                                    .primary()
+                                    .label("New session")
+                                    .on_click(cx.listener(|this, _, _, cx| this.new_session(cx))),
+                            ),
+                    ),
+            );
+        }
+
+        panel.into_any_element()
     }
 
     fn on_new(&mut self, _: &NewSession, _: &mut Window, cx: &mut Context<Self>) {
@@ -1811,65 +2741,127 @@ impl Zoc {
         self.show_preview = !self.show_preview;
         cx.notify();
     }
-}
-
-impl Render for Zoc {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let background = cx.theme().background;
-        let foreground = cx.theme().foreground;
-        let muted = cx.theme().muted_foreground;
-        let destructive = cx.theme().danger;
+    fn render_titlebar(&self, _cx: &mut Context<Self>) -> AnyElement {
+        let project_name = self.active_project_name();
+        let tone = t::project_tone(self.active_project());
         let status = if !self.data.connected {
             "Disconnected"
         } else if !self.data.stream_connected {
-            "Connected · stream reconnecting"
+            "Reconnecting"
         } else {
             "Connected"
         };
+
+        TitleBar::new()
+            .h(px(36.))
+            .pl(px(8.))
+            .bg(t::deep())
+            .border_color(t::border_muted())
+            .child(
+                h_flex()
+                    .h_full()
+                    .w_full()
+                    .gap(px(8.))
+                    .pr(px(4.))
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("ZOC"),
+                    )
+                    .child(div().h(px(16.)).w(px(1.)).bg(t::border_muted()))
+                    .when(!project_name.is_empty(), |row| {
+                        row.child(
+                            div()
+                                .size(px(16.))
+                                .flex_shrink_0()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded(px(4.))
+                                .bg(rgb(tone.background))
+                                .border_1()
+                                .border_color(rgb(tone.border))
+                                .text_size(px(11.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(rgb(0xffffff))
+                                .child(t::initial(&project_name)),
+                        )
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(px(13.))
+                                .text_color(t::text_muted())
+                                .child(project_name),
+                        )
+                    })
+                    .child(div().flex_1())
+                    .child(
+                        h_flex()
+                            .gap(px(6.))
+                            .child(div().size(px(6.)).rounded(px(3.)).bg(rgb(
+                                if self.data.connected {
+                                    t::SUCCESS
+                                } else {
+                                    t::DANGER
+                                },
+                            )))
+                            .child(
+                                div()
+                                    .text_size(px(12.))
+                                    .text_color(t::text_faint())
+                                    .child(status),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
+}
+
+impl Render for Zoc {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let client_decorated = matches!(window.window_decorations(), Decorations::Client { .. });
+
         v_flex()
             .id("zoc")
             .size_full()
-            .bg(background)
-            .text_color(foreground)
+            .bg(t::deep())
+            .text_color(t::text_base())
             .on_action(cx.listener(Self::on_new))
             .on_action(cx.listener(Self::on_send))
             .on_action(cx.listener(Self::on_focus_composer))
             .on_action(cx.listener(Self::on_focus_search))
             .on_action(cx.listener(Self::on_toggle_preview))
-            .child(
-                TitleBar::new().child(
-                    h_flex()
-                        .h_full()
-                        .w_full()
-                        .items_center()
-                        .gap_3()
-                        .pr_2()
-                        .child(div().font_semibold().child("ZOC"))
-                        .child(div().text_xs().text_color(muted).child(status))
-                        .child(div().flex_1())
-                        .child(self.render_projects(cx))
-                        .child(
-                            Button::new("connection-settings")
-                                .small()
-                                .ghost()
-                                .label("Connection")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.show_connection = !this.show_connection;
-                                    cx.notify();
-                                })),
-                        ),
-                ),
-            )
-            .when(self.show_connection, |view| {
-                view.child(self.render_connection(cx))
+            .on_action(cx.listener(|this, _: &ShowHome, _, cx| this.open_home(cx)))
+            .on_action(cx.listener(|this, _: &RenameMenuSession, window, cx| {
+                this.rename_menu_session(window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ToggleMenuRead, _, cx| this.toggle_menu_read(cx)))
+            .on_action(cx.listener(|this, _: &ArchiveMenuSession, _, cx| {
+                this.archive_menu_session(true, cx)
+            }))
+            .on_action(cx.listener(|this, _: &UnarchiveMenuSession, _, cx| {
+                this.archive_menu_session(false, cx)
+            }))
+            .when(client_decorated, |view| {
+                view.child(self.render_titlebar(cx))
             })
             .when_some(self.data.error.as_ref(), |view, error| {
                 view.child(
                     h_flex()
-                        .p_2()
-                        .gap_3()
-                        .bg(destructive.opacity(0.12))
-                        .child(div().flex_1().text_sm().child(error.clone()))
+                        .flex_shrink_0()
+                        .px(px(16.))
+                        .py(px(8.))
+                        .gap(px(12.))
+                        .bg(t::danger().opacity(0.12))
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_size(px(13.))
+                                .text_color(t::text_base())
+                                .child(error.clone()),
+                        )
                         .child(
                             Button::new("dismiss-error")
                                 .small()
@@ -1887,11 +2879,20 @@ impl Render for Zoc {
                     .flex_1()
                     .min_h_0()
                     .min_w_0()
+                    .items_stretch()
                     .child(self.render_sidebar(cx))
-                    .child(self.render_central(cx))
-                    .when(self.show_preview, |view| {
-                        view.child(self.render_preview(cx))
-                    }),
+                    .child(
+                        h_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .p(px(8.))
+                            .gap(px(8.))
+                            .child(self.render_central(cx))
+                            .when(self.show_preview, |view| {
+                                view.child(self.render_preview(cx))
+                            }),
+                    ),
             )
     }
 }
@@ -1904,8 +2905,44 @@ fn main() {
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)
         .run(|cx| {
+            cx.text_system()
+                .add_fonts(vec![Cow::Borrowed(
+                    include_bytes!("../assets/Inter.ttf").as_slice(),
+                )])
+                .expect("Inter must load");
             gpui_kit::init(cx);
             gpui_kit::component::Theme::change(gpui_kit::component::ThemeMode::Dark, None, cx);
+            gpui_kit::component::Theme::update(cx, |theme| {
+                let mut colors = *gpui_kit::component::ThemeColor::dark().as_ref();
+                colors.background = t::base();
+                colors.foreground = t::text_base();
+                colors.border = t::border_base();
+                colors.muted_foreground = t::text_muted();
+                colors.secondary = t::layer_01();
+                colors.secondary_hover = t::layer_02();
+                colors.secondary_active = t::layer_02();
+                colors.secondary_foreground = t::text_base();
+                colors.input = t::layer_01();
+                colors.popover = t::layer_01();
+                colors.popover_foreground = t::text_base();
+                colors.sidebar = t::deep();
+                colors.sidebar_foreground = t::text_base();
+                colors.sidebar_border = t::border_muted();
+                colors.title_bar = t::deep();
+                colors.title_bar_border = t::border_muted();
+                colors.accent = t::hover();
+                colors.accent_foreground = t::text_base();
+                colors.primary = t::accent();
+                colors.primary_foreground = rgb(0xffffff).into();
+                colors.danger = t::danger();
+                colors.warning = t::warning();
+                theme.colors = colors;
+                theme.font_family = "Inter".into();
+                theme.font_size = px(14.);
+                theme.radius = px(6.);
+                theme.radius_lg = px(10.);
+                theme.window_radius = px(10.);
+            });
             cx.bind_keys(vec![
                 KeyBinding::new("ctrl-n", NewSession, None),
                 KeyBinding::new("ctrl-enter", SendPrompt, None),
@@ -1917,9 +2954,14 @@ fn main() {
             gpui_kit::open_window(
                 WindowOptions {
                     window_bounds: Some(bounds),
-                    #[cfg(target_os = "linux")]
-                    window_decorations: Some(WindowDecorations::Client),
-                    ..TitleBar::window_options()
+                    window_min_size: Some(size(px(900.), px(600.))),
+                    titlebar: Some(TitlebarOptions {
+                        title: Some("ZOC".into()),
+                        appears_transparent: true,
+                        traffic_light_position: None,
+                    }),
+                    app_owns_titlebar_drag: true,
+                    ..Default::default()
                 },
                 cx,
                 |window, cx| cx.new(|cx| Zoc::new(window, cx)),

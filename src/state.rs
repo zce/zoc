@@ -17,13 +17,51 @@ pub enum InboxGroup {
 impl InboxGroup {
     pub fn title(self) -> &'static str {
         match self {
-            Self::Attention => "Needs Attention",
+            Self::Attention => "Needs attention",
             Self::Unread => "Unread",
             Self::Recent => "Recent",
             Self::Working => "Working",
         }
     }
-    pub const ALL: [Self; 4] = [Self::Attention, Self::Unread, Self::Recent, Self::Working];
+}
+
+/// The state a person acts on, matching the official Inbox model. A session
+/// reaches exactly one of these, and each maps to one visible group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InboxStatus {
+    Approval,
+    Input,
+    Working,
+    Failed,
+    Done,
+    Ready,
+}
+
+impl InboxStatus {
+    pub fn group(self) -> InboxGroup {
+        match self {
+            Self::Approval | Self::Input => InboxGroup::Attention,
+            Self::Working => InboxGroup::Working,
+            Self::Failed | Self::Done => InboxGroup::Unread,
+            Self::Ready => InboxGroup::Recent,
+        }
+    }
+
+    pub fn is_attention(self) -> bool {
+        matches!(self, Self::Approval | Self::Input)
+    }
+
+    pub fn is_unread(self) -> bool {
+        matches!(self, Self::Failed | Self::Done)
+    }
+
+    pub fn is_working(self) -> bool {
+        self == Self::Working
+    }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -35,6 +73,10 @@ pub struct Preferences {
     pub read: HashMap<String, f64>,
     #[serde(default)]
     pub drafts: HashMap<String, String>,
+    #[serde(default = "default_true")]
+    pub working_expanded: bool,
+    #[serde(default)]
+    pub recent_expanded: bool,
 }
 
 fn prefs_path() -> Option<PathBuf> {
@@ -72,7 +114,11 @@ pub struct AppState {
     pub projects: Vec<Project>,
     pub sessions: Vec<Session>,
     pub running: HashSet<String>,
+    /// Sessions with a pending request, from official store snapshots. The
+    /// current conversation also updates this through its approval snapshot.
+    pub attention: HashMap<String, InboxStatus>,
     pub archived: bool,
+    pub archived_available: bool,
     pub current_project: Option<String>,
     pub current_session: Option<String>,
     pub messages: HashMap<String, Vec<Value>>,
@@ -102,7 +148,9 @@ impl Default for AppState {
             projects: Vec::new(),
             sessions: Vec::new(),
             running: HashSet::new(),
+            attention: HashMap::new(),
             archived: false,
+            archived_available: false,
             current_project: None,
             current_session: None,
             messages: HashMap::new(),
@@ -144,30 +192,35 @@ impl AppState {
             .or_else(|| self.project_directory())
     }
 
-    pub fn classify(&self, session: &Session) -> InboxGroup {
+    pub fn status(&self, session: &Session) -> InboxStatus {
+        let id = session.id.as_str();
+
         if self
             .permissions
-            .get(&session.id.0)
+            .get(id)
             .is_some_and(|items| !items.is_empty())
-            || self
-                .forms
-                .get(&session.id.0)
-                .is_some_and(|items| !items.is_empty())
         {
-            return InboxGroup::Attention;
+            return InboxStatus::Approval;
         }
-        if self.running.contains(&session.id.0)
+        if self.forms.get(id).is_some_and(|items| !items.is_empty()) {
+            return InboxStatus::Input;
+        }
+        match self.attention.get(id) {
+            Some(status) if status.is_attention() => return *status,
+            _ => {}
+        }
+        if self.running.contains(id)
             || session
                 .time
                 .busy
                 .is_some_and(|busy| busy > session.time.idle.unwrap_or(0.0))
         {
-            return InboxGroup::Working;
+            return InboxStatus::Working;
         }
         let viewed = self
             .prefs
             .read
-            .get(&session.id.0)
+            .get(id)
             .copied()
             .unwrap_or(session.time.viewed.unwrap_or(0.0));
         if session.time.idle.is_some_and(|idle| idle > viewed)
@@ -177,44 +230,83 @@ impl AppState {
                 .is_some_and(|outcome| outcome.as_str() == "failed")
                 && session.time.updated > viewed)
         {
-            return InboxGroup::Unread;
+            return if session
+                .outcome
+                .as_ref()
+                .is_some_and(|outcome| outcome.as_str() == "failed")
+            {
+                InboxStatus::Failed
+            } else {
+                InboxStatus::Done
+            };
         }
-        InboxGroup::Recent
+        InboxStatus::Ready
     }
 
+    pub fn classify(&self, session: &Session) -> InboxGroup {
+        self.status(session).group()
+    }
+
+    /// Mirrors the official index's ordering: requests wait oldest first,
+    /// completed runs newest first, and working runs by when they started.
     pub fn sorted_inbox(&self, group: InboxGroup, filter: &str) -> Vec<Session> {
+        let needle = filter.to_lowercase();
         let mut list: Vec<_> = self
             .sessions
             .iter()
-            .filter(|s| self.classify(s) == group)
-            .filter(|s| {
-                filter.is_empty()
-                    || s.title
+            .filter(|session| self.classify(session) == group)
+            .filter(|session| {
+                needle.is_empty()
+                    || session
+                        .title
                         .as_deref()
                         .unwrap_or("")
                         .to_lowercase()
-                        .contains(&filter.to_lowercase())
-                    || s.id
-                        .as_str()
-                        .to_lowercase()
-                        .contains(&filter.to_lowercase())
+                        .contains(&needle)
+                    || session.id.as_str().to_lowercase().contains(&needle)
             })
             .cloned()
             .collect();
         list.sort_by(|a, b| {
-            let a_time = if group == InboxGroup::Working {
-                a.time.busy.unwrap_or(a.time.updated)
-            } else {
-                a.time.updated.max(a.time.created)
+            let a_since = session_since(self.status(a), a);
+            let b_since = session_since(self.status(b), b);
+            let ordered = match group {
+                InboxGroup::Attention | InboxGroup::Working => a_since
+                    .unwrap_or(f64::INFINITY)
+                    .total_cmp(&b_since.unwrap_or(f64::INFINITY)),
+                InboxGroup::Unread | InboxGroup::Recent => {
+                    b_since.unwrap_or(0.0).total_cmp(&a_since.unwrap_or(0.0))
+                }
             };
-            let b_time = if group == InboxGroup::Working {
-                b.time.busy.unwrap_or(b.time.updated)
-            } else {
-                b.time.updated.max(b.time.created)
-            };
-            b_time.total_cmp(&a_time)
+            ordered.then_with(|| a.id.as_str().cmp(b.id.as_str()))
         });
         list
+    }
+
+    pub fn set_attention(&mut self, approvals: Vec<String>, questions: Vec<String>) {
+        self.attention.clear();
+        for id in approvals {
+            self.attention.insert(id, InboxStatus::Approval);
+        }
+        for id in questions {
+            self.attention.insert(id, InboxStatus::Input);
+        }
+    }
+
+    /// Record the session as viewed, using the server's idle timestamp exactly
+    /// like the official notification state.
+    pub fn mark_read(&mut self, session: &Session) {
+        let read = session
+            .time
+            .idle
+            .unwrap_or_else(|| session.time.updated.max(1.0));
+        self.prefs.read.insert(session.id.0.clone(), read);
+        self.prefs.save();
+    }
+
+    pub fn mark_unread(&mut self, session: &Session) {
+        self.prefs.read.insert(session.id.0.clone(), 0.0);
+        self.prefs.save();
     }
 
     pub fn select_session(&mut self, session: String) {
@@ -297,11 +389,44 @@ impl AppState {
     }
 }
 
+/// The timestamp the Inbox shows for an entry. Working age starts at the run's
+/// start; other states use the last idle time (or update time when the server
+/// has not recorded one).
+pub fn session_since(status: InboxStatus, session: &Session) -> Option<f64> {
+    match status {
+        InboxStatus::Working => session
+            .time
+            .busy
+            .filter(|busy| session.time.idle.map(|idle| idle <= *busy).unwrap_or(true)),
+        InboxStatus::Approval | InboxStatus::Input => {
+            session.time.idle.or(Some(session.time.updated))
+        }
+        InboxStatus::Failed | InboxStatus::Done | InboxStatus::Ready => {
+            session.time.idle.or(Some(session.time.updated))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use opencode_api::generated::{ProjectID, SessionID, SessionInfoTime};
+    use opencode_api::generated::{ProjectID, SessionID, SessionInfoOutcome, SessionInfoTime};
     use serde_json::json;
+
+    fn session(id: &str, idle: f64, viewed: f64) -> Session {
+        Session {
+            id: SessionID(id.into()),
+            project_id: ProjectID::default(),
+            time: SessionInfoTime {
+                created: 1.0,
+                updated: idle,
+                idle: Some(idle),
+                viewed: Some(viewed),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
     #[test]
     fn message_updates_replace_only_the_matching_transcript_rows() {
         let mut state = AppState::default();
@@ -317,6 +442,54 @@ mod tests {
         assert_eq!(state.messages["ses_1"][0]["text"], "new");
         assert_eq!(state.messages["ses_1"][1]["text"], "keep");
         assert!(!state.update_messages("ses_1", vec![json!({"id":"missing","text":"lost"})]));
+    }
+
+    #[test]
+    fn attention_and_working_follow_the_official_precedence() {
+        let mut state = AppState::default();
+        let mut waiting = session("ses_waiting", 300.0, 100.0);
+        waiting.time.busy = Some(500.0);
+        state.sessions.push(waiting);
+
+        assert_eq!(state.status(&state.sessions[0]), InboxStatus::Working);
+        state
+            .attention
+            .insert("ses_waiting".into(), InboxStatus::Approval);
+        assert_eq!(state.status(&state.sessions[0]), InboxStatus::Approval);
+        state.set_attention(vec!["ses_waiting".into()], Vec::new());
+        assert_eq!(state.status(&state.sessions[0]), InboxStatus::Approval);
+        state.set_attention(Vec::new(), Vec::new());
+        assert_eq!(state.status(&state.sessions[0]), InboxStatus::Working);
+    }
+
+    #[test]
+    fn finished_runs_are_unread_until_viewed_and_failures_stay_distinct() {
+        let mut state = AppState::default();
+        let mut failed = session("ses_failed", 300.0, 100.0);
+        failed.outcome = Some(SessionInfoOutcome::Failed);
+        let mut done = session("ses_done", 300.0, 100.0);
+        done.outcome = Some(SessionInfoOutcome::Succeeded);
+        let read = session("ses_read", 300.0, 400.0);
+        state.sessions.extend([failed, done, read]);
+
+        assert_eq!(state.status(&state.sessions[0]), InboxStatus::Failed);
+        assert_eq!(state.status(&state.sessions[1]), InboxStatus::Done);
+        assert_eq!(state.status(&state.sessions[2]), InboxStatus::Ready);
+
+        state.mark_read(&state.sessions[0].clone());
+        assert_eq!(state.status(&state.sessions[0]), InboxStatus::Ready);
+        state.mark_unread(&state.sessions[0].clone());
+        assert_eq!(state.status(&state.sessions[0]), InboxStatus::Failed);
+    }
+
+    #[test]
+    fn working_age_uses_run_start_only_while_the_run_is_current() {
+        let mut item = session("ses_work", 100.0, 0.0);
+        item.time.busy = Some(200.0);
+        assert_eq!(session_since(InboxStatus::Working, &item), Some(200.0));
+
+        item.time.idle = Some(400.0);
+        assert_eq!(session_since(InboxStatus::Working, &item), None);
     }
 
     #[test]
@@ -337,7 +510,7 @@ mod tests {
         }
         assert_eq!(
             state.sorted_inbox(InboxGroup::Working, "")[0].id.as_str(),
-            "b"
+            "a"
         );
     }
 }

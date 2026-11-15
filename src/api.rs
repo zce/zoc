@@ -90,6 +90,9 @@ pub enum Command {
     LoadMetadata {
         directory: String,
     },
+    HasArchived {
+        project: String,
+    },
     LoadConversation {
         session: String,
         epoch: u64,
@@ -148,6 +151,8 @@ pub enum Event {
         archived: bool,
         items: Vec<Session>,
         running: Vec<String>,
+        approvals: Vec<String>,
+        questions: Vec<String>,
     },
     Conversation {
         session: String,
@@ -171,6 +176,10 @@ pub enum Event {
         directory: String,
         models: Vec<Model>,
         agents: Vec<Agent>,
+    },
+    ArchivedAvailable {
+        project: String,
+        available: bool,
     },
     Created(Box<Session>),
     Updated {
@@ -478,16 +487,6 @@ impl ServiceClient {
         Ok(conversation_snapshot(&self.store.data, id))
     }
 
-    fn running_sessions(&self) -> Vec<String> {
-        self.store.data.read(|state| {
-            state
-                .active_sessions()
-                .into_iter()
-                .map(|session| session.0.clone())
-                .collect()
-        })
-    }
-
     fn set_active_session(&self, session: String, epoch: u64) {
         let mut context = self
             .store
@@ -495,6 +494,20 @@ impl ServiceClient {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         context.session = Some((session, epoch));
+    }
+
+    async fn has_archived(&self, project: &str) -> anyhow::Result<bool> {
+        let response = self
+            .call(self.client.session_list(&SessionListInput {
+                limit: Some(1),
+                order: Some(SessionListInputOrder::Desc),
+                parent_id: Some(None),
+                archived: Some(true),
+                project: Some(ProjectID(project.to_owned())),
+                ..Default::default()
+            }))
+            .await?;
+        Ok(!response.data.is_empty())
     }
 
     async fn metadata(&self, directory: &str) -> anyhow::Result<(Vec<Model>, Vec<Agent>)> {
@@ -576,15 +589,23 @@ async fn run_command(
                 },
             );
         }
+        Command::HasArchived { project } => {
+            let available = service.has_archived(&project).await?;
+            emit(events, Event::ArchivedAvailable { project, available });
+        }
         Command::ListSessions { project, archived } => {
             let items = service.sessions(&project, archived).await?;
+            let (items, running, approvals, questions) =
+                sessions_snapshot(&service.store.data, items);
             emit(
                 events,
                 Event::Sessions {
                     project,
                     archived,
                     items,
-                    running: service.running_sessions(),
+                    running,
+                    approvals,
+                    questions,
                 },
             );
         }
@@ -626,12 +647,10 @@ async fn run_command(
                     ..Default::default()
                 }))
                 .await?;
-            service
-                .store
-                .data
-                .session_sync(&id, false)
-                .await
-                .map_err(|error| anyhow::anyhow!(error.tui_message()))?;
+            // The server accepted the rename/archive. Force the store to reread
+            // the row instead of keeping its deduplicated, pre-update cache.
+            service.store.data.session_invalidate(&id);
+            let _ = service.store.data.session_sync(&id, false).await;
             emit(events, Event::Updated { session });
         }
         Command::Archive { session, archived } => {
@@ -643,12 +662,10 @@ async fn run_command(
                     ..Default::default()
                 }))
                 .await?;
-            service
-                .store
-                .data
-                .session_sync(&id, false)
-                .await
-                .map_err(|error| anyhow::anyhow!(error.tui_message()))?;
+            // The server accepted the rename/archive. Force the store to reread
+            // the row instead of keeping its deduplicated, pre-update cache.
+            service.store.data.session_invalidate(&id);
+            let _ = service.store.data.session_sync(&id, false).await;
             emit(events, Event::Updated { session });
         }
         Command::Send {
@@ -715,12 +732,8 @@ async fn run_command(
                     resume: None,
                 }))
                 .await?;
-            service
-                .store
-                .data
-                .session_sync(&id, false)
-                .await
-                .map_err(|error| anyhow::anyhow!(error.tui_message()))?;
+            service.store.data.session_invalidate(&id);
+            let _ = service.store.data.session_sync(&id, false).await;
             emit(events, Event::Interrupted { session });
         }
         Command::ReplyPermission {
@@ -817,26 +830,30 @@ fn approvals_snapshot(data: &StoreData, session: &str) -> (Vec<Value>, Vec<Value
 
 fn sessions_snapshot(
     data: &StoreData,
-    project: &str,
-    archived: bool,
-) -> (Vec<Session>, Vec<String>) {
+    items: Vec<Session>,
+) -> (Vec<Session>, Vec<String>, Vec<String>, Vec<String>) {
+    let ids: std::collections::HashSet<String> =
+        items.iter().map(|session| session.id.0.clone()).collect();
     data.read(|state| {
-        let sessions = state
-            .sessions()
-            .into_iter()
-            .filter(|session| {
-                session.project_id.0 == project
-                    && session.parent_id.is_none()
-                    && session.time.archived.is_some() == archived
-            })
-            .cloned()
-            .collect();
         let running = state
             .active_sessions()
             .into_iter()
             .map(|session| session.0.clone())
+            .filter(|id| ids.contains(id))
             .collect();
-        (sessions, running)
+        let approvals = state
+            .permission_sessions()
+            .into_iter()
+            .map(|session| session.0.clone())
+            .filter(|id| ids.contains(id))
+            .collect();
+        let questions = state
+            .form_sessions()
+            .into_iter()
+            .filter(|owner| ids.contains(*owner))
+            .map(str::to_owned)
+            .collect();
+        (items, running, approvals, questions)
     })
 }
 
@@ -884,19 +901,33 @@ fn spawn_store_watch(
                         emit(&events, Event::Projects { projects });
                     }
 
-                    if (changes.sessions() || !changes.status.is_empty())
+                    if (changes.sessions()
+                        || !changes.status.is_empty()
+                        || !changes.permissions.is_empty()
+                        || !changes.forms.is_empty())
                         && let Some(project) = context.project
                     {
-                        let (items, running) = sessions_snapshot(
-                            &store.data,
-                            &project,
-                            context.archived,
-                        );
+                        let items = store.data.read(|state| {
+                            state
+                                .sessions()
+                                .into_iter()
+                                .filter(|session| {
+                                    session.project_id.0 == project
+                                        && session.parent_id.is_none()
+                                        && session.time.archived.is_some() == context.archived
+                                })
+                                .cloned()
+                                .collect()
+                        });
+                        let (items, running, approvals, questions) =
+                            sessions_snapshot(&store.data, items);
                         emit(&events, Event::Sessions {
                             project,
                             archived: context.archived,
                             items,
                             running,
+                            approvals,
+                            questions,
                         });
                     }
 
@@ -1140,6 +1171,20 @@ mod tests {
         let message: SessionMessageInfo = serde_json::from_value(raw.clone()).unwrap();
         assert!(matches!(message, SessionMessageInfo::Unknown(_)));
         assert_eq!(serde_json::to_value(message).unwrap(), raw);
+    }
+
+    #[test]
+    fn official_archived_timestamp_round_trips() {
+        let session: Session = serde_json::from_value(json!({
+            "id": "ses_1",
+            "projectID": "prj_1",
+            "location": {"directory": "/work/one"},
+            "time": {"created": 1, "updated": 3, "archived": 4},
+            "cost": 0,
+            "tokens": {"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}}
+        }))
+        .unwrap();
+        assert_eq!(session.time.archived, Some(4.0));
     }
 
     #[test]
