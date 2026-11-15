@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use smol::channel::Sender as UiSender;
 use std::{
+    collections::HashMap,
     future::Future,
     net::IpAddr,
     sync::{
@@ -80,6 +81,29 @@ pub fn model_display(model: &ModelRef) -> String {
     )
 }
 
+fn export_filename(title: Option<&str>, id: &str) -> String {
+    let name = title
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .unwrap_or(id);
+    let mut slug = String::new();
+    let mut dash = false;
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+            slug.extend(ch.to_lowercase());
+            dash = false;
+        } else if !dash && !slug.is_empty() {
+            slug.push('-');
+            dash = true;
+        }
+        if slug.len() >= 250 {
+            break;
+        }
+    }
+    let slug = slug.trim_matches('-');
+    format!("{}.json", if slug.is_empty() { id } else { slug })
+}
+
 #[derive(Clone, Debug)]
 pub enum Command {
     Connect(Connection),
@@ -130,6 +154,15 @@ pub enum Command {
     },
     LoadChanges {
         directory: String,
+    },
+    LoadBranches {
+        directories: Vec<String>,
+    },
+    Delete {
+        session: String,
+    },
+    ExportSession {
+        session: String,
     },
 }
 
@@ -193,6 +226,16 @@ pub enum Event {
     Changes {
         items: Vec<Value>,
         diffs: Vec<Value>,
+    },
+    Branches {
+        entries: Vec<(String, Option<String>)>,
+    },
+    Deleted {
+        session: String,
+    },
+    Exported {
+        filename: String,
+        contents: String,
     },
     StreamDisconnected,
     StreamReconnected,
@@ -328,6 +371,7 @@ struct ServiceClient {
     client: Client,
     info: ServerInfo,
     store: Arc<StoreConnection>,
+    branches: Arc<Mutex<HashMap<String, Option<String>>>>,
 }
 
 impl ServiceClient {
@@ -393,6 +437,7 @@ impl ServiceClient {
             client,
             info,
             store,
+            branches: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -499,6 +544,71 @@ impl ServiceClient {
             }))
             .await?;
         Ok(!response.data.is_empty())
+    }
+
+    async fn branches(&self, directories: Vec<String>) -> Vec<(String, Option<String>)> {
+        let mut entries = Vec::new();
+        for directory in directories {
+            let cached = self
+                .branches
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get(&directory)
+                .cloned();
+            match cached {
+                Some(branch) => entries.push((directory, branch)),
+                None => {
+                    let branch = self
+                        .call(self.client.vcs_get(&VcsGetInput {
+                            location: Some(LocationQueryInput {
+                                directory: Some(directory.clone()),
+                            }),
+                        }))
+                        .await
+                        .ok()
+                        .and_then(|output| output.data.branch.current);
+                    self.branches
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .insert(directory.clone(), branch.clone());
+                    entries.push((directory, branch));
+                }
+            }
+        }
+        entries
+    }
+
+    async fn delete(&self, session: &str) -> anyhow::Result<()> {
+        self.call(self.client.session_remove(&SessionRemoveInput {
+            session_id: SessionID(session.to_owned()),
+        }))
+        .await
+    }
+
+    async fn export(&self, session: &str) -> anyhow::Result<(String, String)> {
+        let info = self
+            .call(self.client.session_get(&SessionGetInput {
+                session_id: SessionID(session.to_owned()),
+            }))
+            .await?;
+        self.conversation(session).await?;
+        let (mut messages, _, _) = conversation_snapshot(&self.store.data, session);
+        messages.sort_by(|a, b| {
+            let created = |message: &Value| {
+                message
+                    .get("time")
+                    .and_then(|time| time.get("created"))
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.)
+            };
+            created(a).total_cmp(&created(b))
+        });
+        let data = serde_json::json!({
+            "info": info,
+            "messages": messages,
+        });
+        let filename = export_filename(info.title.as_deref(), info.id.as_str());
+        Ok((filename, serde_json::to_string_pretty(&data)?))
     }
 
     async fn metadata(&self, directory: &str) -> anyhow::Result<(Vec<Model>, Vec<Agent>)> {
@@ -770,6 +880,23 @@ async fn run_command(
         Command::LoadChanges { directory } => {
             let (items, diffs) = service.changes(&directory).await?;
             emit(events, Event::Changes { items, diffs });
+        }
+        Command::LoadBranches { directories } => {
+            let service = service.clone();
+            let events = events.clone();
+            tokio::spawn(async move {
+                let entries = service.branches(directories).await;
+                emit(&events, Event::Branches { entries });
+            });
+        }
+        Command::Delete { session } => {
+            service.delete(&session).await?;
+            service.store.data.forget(&SessionID(session.clone()));
+            emit(events, Event::Deleted { session });
+        }
+        Command::ExportSession { session } => {
+            let (filename, contents) = service.export(&session).await?;
+            emit(events, Event::Exported { filename, contents });
         }
     }
     Ok(())
@@ -1189,5 +1316,16 @@ mod tests {
         }))
         .unwrap();
         assert!(time.busy.unwrap() > time.idle.unwrap());
+    }
+
+    #[test]
+    fn export_filename_uses_a_sanitized_title_or_the_session_id() {
+        assert_eq!(
+            export_filename(Some("Refactor session recovery"), "ses_1"),
+            "refactor-session-recovery.json"
+        );
+        assert_eq!(export_filename(Some("A/B: C"), "ses_1"), "a-b-c.json");
+        assert_eq!(export_filename(Some("   "), "ses_1"), "ses_1.json");
+        assert_eq!(export_filename(Some("你好"), "ses_1"), "ses_1.json");
     }
 }

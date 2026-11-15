@@ -30,12 +30,23 @@ Reference: `anomalyco/opencode` at commit
 - Official status precedence: approval, form input, working, failed/done unread,
   ready. Working entries are ordered by run start and pinned in a shelf at the
   bottom of the sidebar. Recent is capped at ten with Show more/Show less.
+- A selected session that falls outside the visible Recent limit is pinned at
+  the top as an unlabelled current row, matching the official `current`
+  section, and is not repeated in Recent.
+- Cards show the current branch from `GET /api/vcs` and a worktree marker when
+  the session directory differs from the project canonical directory. Server
+  tags remain absent for a single server, as the official `servers.tag` helper
+  suppresses them when only one server is visible.
 - Search filters the Inbox in place. Archived sessions load on demand and keep
   the archived-only view and unarchive action. The Archived link only appears
   when the service reports an archived session.
-- Context menus rename, mark read/unread and archive/unarchive. Archiving keeps
-  the open transcript until the list confirms the change; failures leave it in
-  place.
+- Context menus rename, export, mark read/unread, archive/unarchive and delete.
+  Export fetches the session info and all messages, writes the official
+  `{info, messages}` JSON shape through the native save dialog and reports the
+  result in a dismissible notice. Delete asks for confirmation, waits for the
+  server's 204 response, forgets the store row and refreshes the Inbox.
+  Archiving keeps the open transcript until the list confirms the change;
+  failures leave it in place.
 - Window shell requests native server-side decorations. When GPUI reports a
   client-decorated window, a minimal 36px titlebar with a project label,
   connection state and window controls is drawn instead.
@@ -45,7 +56,7 @@ Reference: `anomalyco/opencode` at commit
 ## Verification performed
 
 - Podman Fedora 45: `cargo fmt --all --check`, `cargo clippy --all-targets --
-  -D warnings`, 14 unit tests, `cargo build --release`, `zoc --check`.
+  -D warnings`, 16 unit tests, `cargo build --release`, `zoc --check`.
 - Xvfb + openbox with a disposable mock OpenCode HTTP/SSE service: inspected
   Home, grouped Inbox, hover/selection, working shelf, archived view,
   permission dock and context-menu archive flow, including a two-project
@@ -55,6 +66,14 @@ Reference: `anomalyco/opencode` at commit
   clicking a card, moving with Down/Home/End, opening with Enter and confirming
   that search-field keys were not captured; in a 900x600 window the list
   scrolled the Recent section into view as the cursor advanced.
+- The extended mock served `/api/vcs` and a worktree session: the branch and
+  worktree markers rendered on cards. With twelve newer ready sessions the
+  selected session was pinned above the sections, stayed selected and was not
+  duplicated in the visible Recent rows. The context menu showed
+  Rename/Export/Mark read/Archive/Delete; delete displayed the confirmation
+  dialog, removed the row and kept Home open. Export invoked the native save
+  dialog path and reported its unavailable-portal error without changing the
+  selected session.
 - The mock service was not the real OpenCode service. Server-side decorations
   were exercised under openbox; the client-decorated fallback was inspected by
   forcing its draw path because Xvfb provides no compositor.
@@ -63,8 +82,16 @@ Reference: `anomalyco/opencode` at commit
 
 - Multiple servers are still discovered one at a time; the Inbox is global
   across projects on the connected service, not across simultaneous servers.
+  Server tags are therefore intentionally absent for the single connected
+  server, matching `servers.tag` when fewer than two servers are visible.
 - The context menu uses the GPUI Kit popup surface; its radius/elevation still
   differs slightly from the official menu.
+- Branch labels are cached per connection and do not refresh on
+  `vcs.branch.updated`; a checkout made while ZOC is open needs a reconnect or
+  a future branch-sync event.
+- Export's native save dialog, saved JSON content and delete against the real
+  service were not verified. Xvfb has no XDG desktop portal, so only the
+  unavailable-dialog error path was exercised.
 - Attention age uses the session's idle/update time; the pinned store request
   snapshots do not expose the original request timestamp.
 - Keyboard auto-scroll follows the main Inbox list sections; the pinned Working
@@ -78,4 +105,6 @@ Reference: `anomalyco/opencode` at commit
   keyboard focus and IME. Specifically, Tab into the Inbox, move with
   Up/Down/Home/End, open with Enter, clear with Escape, confirm the focused row
   stays visible while scrolling, and confirm search/composer typing is not
-  intercepted.
+  intercepted. Against a real service, also confirm branch/worktree markers,
+  the current row beyond Recent's ten, Export's save dialog and saved JSON, and
+  Delete's confirmation plus list refresh.
