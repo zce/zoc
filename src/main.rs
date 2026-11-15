@@ -1817,7 +1817,6 @@ impl Render for Zoc {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let background = cx.theme().background;
         let foreground = cx.theme().foreground;
-        let border = cx.theme().border;
         let muted = cx.theme().muted_foreground;
         let destructive = cx.theme().danger;
         let status = if !self.data.connected {
