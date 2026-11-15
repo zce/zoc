@@ -60,6 +60,39 @@ impl InboxStatus {
     }
 }
 
+/// The official Inbox pins a selected session at the top when its row would
+/// otherwise be hidden by the Recent limit. Working rows live in their shelf,
+/// so they are never repeated here.
+pub fn current_inbox_extra(
+    current: Option<&str>,
+    sessions: &[Session],
+    shown: &[Session],
+    working: &[Session],
+    filter: &str,
+) -> Option<Session> {
+    let current = current?;
+    let session = sessions
+        .iter()
+        .find(|session| session.id.as_str() == current)?
+        .clone();
+    if !filter.is_empty()
+        && !session
+            .title
+            .as_deref()
+            .unwrap_or("")
+            .to_lowercase()
+            .contains(&filter.to_lowercase())
+    {
+        return None;
+    }
+    if shown.iter().any(|item| item.id == session.id)
+        || working.iter().any(|item| item.id == session.id)
+    {
+        return None;
+    }
+    Some(session)
+}
+
 fn default_true() -> bool {
     true
 }
@@ -147,6 +180,8 @@ pub struct AppState {
     pub selected_model: Option<ModelRef>,
     pub selected_agent: Option<String>,
     pub pending_send: HashSet<String>,
+    pub branches: HashMap<String, Option<String>>,
+    pub notice: Option<String>,
     pub error: Option<String>,
     pub preview: Option<(String, String)>,
     pub changes: Vec<Value>,
@@ -179,6 +214,8 @@ impl Default for AppState {
             selected_model: None,
             selected_agent: None,
             pending_send: HashSet::new(),
+            branches: HashMap::new(),
+            notice: None,
             error: None,
             preview: None,
             changes: Vec::new(),
@@ -457,6 +494,56 @@ mod tests {
         assert_eq!(clamp_sidebar_width(f32::NAN), SIDEBAR_DEFAULT_WIDTH);
         let prefs: Preferences = serde_json::from_str("{}").unwrap();
         assert_eq!(prefs.sidebar_width, SIDEBAR_DEFAULT_WIDTH);
+    }
+
+    #[test]
+    fn current_inbox_extra_only_pins_a_hidden_selected_session() {
+        let mut selected = session("ses_selected", 0.0, 0.0);
+        selected.title = Some("Selected session".into());
+        let shown = session("ses_shown", 0.0, 0.0);
+        let working = session("ses_working", 0.0, 0.0);
+        let sessions = vec![selected.clone(), shown.clone(), working.clone()];
+
+        let extra = current_inbox_extra(
+            Some("ses_selected"),
+            &sessions,
+            std::slice::from_ref(&shown),
+            std::slice::from_ref(&working),
+            "",
+        )
+        .unwrap();
+        assert_eq!(extra.id.as_str(), "ses_selected");
+
+        assert!(
+            current_inbox_extra(
+                Some("ses_selected"),
+                &sessions,
+                &[shown.clone(), selected.clone()],
+                std::slice::from_ref(&working),
+                "",
+            )
+            .is_none()
+        );
+        assert!(
+            current_inbox_extra(
+                Some("ses_selected"),
+                &sessions,
+                std::slice::from_ref(&shown),
+                &[working.clone(), selected.clone()],
+                "",
+            )
+            .is_none()
+        );
+        assert!(
+            current_inbox_extra(
+                Some("ses_selected"),
+                &sessions,
+                &[shown],
+                &[working],
+                "missing",
+            )
+            .is_none()
+        );
     }
 
     #[test]

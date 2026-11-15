@@ -3,6 +3,8 @@ mod state;
 mod theme;
 
 use api::{Command, Event, ModelRef, model_display};
+use gpui_kit::InteractiveElement as _;
+use gpui_kit::StatefulInteractiveElement as _;
 use gpui_kit::base::{InteractiveElementExt as _, StyledExt as _};
 use gpui_kit::component::{
     ActiveTheme, Icon, Sizable as _, TitleBar,
@@ -13,18 +15,21 @@ use gpui_kit::component::{
     message_scroller::{MessageScroller, MessageScrollerState},
     scroll::ScrollableElement as _,
     text::{TextView, TextViewState, TextViewStyle},
+    tooltip::Tooltip,
     v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use serde_json::Value;
 use state::{
-    AppState, InboxGroup, InboxStatus, SIDEBAR_DEFAULT_WIDTH, clamp_sidebar_width, session_since,
+    AppState, InboxGroup, InboxStatus, SIDEBAR_DEFAULT_WIDTH, clamp_sidebar_width,
+    current_inbox_extra, session_since,
 };
 use std::{
     borrow::Cow,
     cell::RefCell,
     collections::{HashMap, HashSet},
+    path::PathBuf,
     rc::Rc,
     sync::mpsc::Sender,
     time::Duration,
@@ -43,7 +48,9 @@ actions!(
         RenameMenuSession,
         ToggleMenuRead,
         ArchiveMenuSession,
-        UnarchiveMenuSession
+        UnarchiveMenuSession,
+        ExportMenuSession,
+        DeleteMenuSession
     ]
 );
 
@@ -281,6 +288,12 @@ fn form_option_chip(
         .child(label)
 }
 
+fn export_directory() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    let downloads = home.join("Downloads");
+    Some(if downloads.is_dir() { downloads } else { home })
+}
+
 fn section_label(label: &'static str) -> AnyElement {
     div()
         .h(px(24.))
@@ -329,6 +342,7 @@ pub struct Zoc {
     inbox_focus: FocusHandle,
     inbox_cursor: Option<String>,
     inbox_scroll: ScrollHandle,
+    confirm_delete: Option<(String, String)>,
     menu_target: Rc<RefCell<Option<String>>>,
     expanded_tools: HashSet<String>,
     _subscriptions: Vec<Subscription>,
@@ -395,6 +409,7 @@ impl Zoc {
             |this, input, event: &gpui_kit::component::input::InputEvent, _, cx| {
                 if matches!(event, gpui_kit::component::input::InputEvent::Change) {
                     this.filter = input.read(cx).value().to_string();
+                    this.load_visible_branches();
                     cx.notify();
                 }
             },
@@ -469,6 +484,7 @@ impl Zoc {
             inbox_focus,
             inbox_cursor: None,
             inbox_scroll,
+            confirm_delete: None,
             menu_target: Rc::new(RefCell::new(None)),
             expanded_tools: HashSet::new(),
             _subscriptions: vec![subscription, inbox_focus_subscription],
@@ -514,6 +530,8 @@ impl Zoc {
         self.data.agents.clear();
         self.data.selected_model = None;
         self.data.selected_agent = None;
+        self.data.branches.clear();
+        self.data.notice = None;
         self.show_home = true;
         self.rows.borrow_mut().clear();
         self.scroller.update(cx, |state, cx| state.reset(0, cx));
@@ -578,6 +596,51 @@ impl Zoc {
         }
     }
 
+    fn visible_inbox_groups(&self) -> Vec<(InboxGroup, Vec<api::Session>)> {
+        if self.data.archived {
+            return Vec::new();
+        }
+        let mut groups = Vec::new();
+        for group in [
+            InboxGroup::Attention,
+            InboxGroup::Unread,
+            InboxGroup::Recent,
+        ] {
+            let entries = self.data.sorted_inbox(group, &self.filter);
+            if entries.is_empty() {
+                continue;
+            }
+            let visible = if group == InboxGroup::Recent && !self.data.prefs.recent_expanded {
+                entries.into_iter().take(10).collect()
+            } else {
+                entries
+            };
+            groups.push((group, visible));
+        }
+        groups
+    }
+
+    fn inbox_current_extra(
+        &self,
+        groups: &[(InboxGroup, Vec<api::Session>)],
+    ) -> Option<api::Session> {
+        if self.data.archived {
+            return None;
+        }
+        let shown: Vec<_> = groups
+            .iter()
+            .flat_map(|(_, sessions)| sessions.iter().cloned())
+            .collect();
+        let working = self.data.sorted_inbox(InboxGroup::Working, &self.filter);
+        current_inbox_extra(
+            self.data.current_session.as_deref(),
+            &self.data.sessions,
+            &shown,
+            &working,
+            &self.filter,
+        )
+    }
+
     fn inbox_targets(&self) -> Vec<(String, usize)> {
         let mut targets = Vec::new();
 
@@ -602,22 +665,15 @@ impl Zoc {
             return targets;
         }
 
+        let groups = self.visible_inbox_groups();
+        let current = self.inbox_current_extra(&groups);
         let mut section = 0;
-        for group in [
-            InboxGroup::Attention,
-            InboxGroup::Unread,
-            InboxGroup::Recent,
-        ] {
-            let entries = self.data.sorted_inbox(group, &self.filter);
-            if entries.is_empty() {
-                continue;
-            }
-            let visible = if group == InboxGroup::Recent && !self.data.prefs.recent_expanded {
-                entries.iter().take(10).cloned().collect()
-            } else {
-                entries
-            };
-            targets.extend(visible.into_iter().map(|session| (session.id.0, section)));
+        if let Some(session) = current {
+            targets.push((session.id.0, section));
+            section += 1;
+        }
+        for (_, sessions) in groups {
+            targets.extend(sessions.into_iter().map(|session| (session.id.0, section)));
             section += 1;
         }
 
@@ -631,6 +687,62 @@ impl Zoc {
         }
 
         targets
+    }
+
+    fn load_visible_branches(&mut self) {
+        if !self.data.connected || self.data.archived {
+            return;
+        }
+        let groups = self.visible_inbox_groups();
+        let mut directories = HashSet::new();
+        for (_, sessions) in &groups {
+            for session in sessions {
+                directories.insert(session.location.directory.0.clone());
+            }
+        }
+        if let Some(session) = self.inbox_current_extra(&groups) {
+            directories.insert(session.location.directory.0.clone());
+        }
+        if self.data.prefs.working_expanded {
+            for session in self.data.sorted_inbox(InboxGroup::Working, &self.filter) {
+                directories.insert(session.location.directory.0.clone());
+            }
+        }
+        directories.retain(|directory| !self.data.branches.contains_key(directory));
+        if !directories.is_empty() {
+            self.send_command(Command::LoadBranches {
+                directories: directories.into_iter().collect(),
+            });
+        }
+    }
+
+    fn save_export(&mut self, filename: String, contents: String, cx: &mut Context<Self>) {
+        let Some(directory) = export_directory() else {
+            self.data.error = Some("Cannot locate a folder for the export".into());
+            cx.notify();
+            return;
+        };
+        let receiver = cx.prompt_for_new_path(&directory, Some(&filename));
+        cx.spawn(async move |weak, cx| {
+            let outcome = match receiver.await {
+                Ok(Ok(Some(path))) => std::fs::write(&path, contents)
+                    .map(|_| path)
+                    .map_err(|error| error.to_string()),
+                Ok(Ok(None)) => return,
+                Ok(Err(_)) | Err(_) => Err("could not open the save dialog".into()),
+            };
+            let _ = weak.update(cx, |this, cx| {
+                match outcome {
+                    Ok(path) => {
+                        this.data.notice = Some(format!("Exported to {}", path.display()));
+                        this.data.error = None;
+                    }
+                    Err(error) => this.data.error = Some(format!("Export failed: {error}")),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn on_inbox_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -796,6 +908,7 @@ impl Zoc {
                 self.data.sessions = items;
                 self.data.running = running.into_iter().collect();
                 self.data.set_attention(approvals, questions);
+                self.load_visible_branches();
                 if let Some(session) = self.data.current_session.as_deref().and_then(|id| {
                     self.data
                         .sessions
@@ -1019,6 +1132,29 @@ impl Zoc {
                     self.open_diff(path, cx);
                 }
             }
+            Event::Branches { entries } => {
+                for (directory, branch) in entries {
+                    self.data.branches.insert(directory, branch);
+                }
+            }
+            Event::Deleted { session } => {
+                self.data.sessions.retain(|item| item.id.0 != session);
+                *self.menu_target.borrow_mut() = None;
+                self.confirm_delete = None;
+                if self.data.current_session.as_deref() == Some(session.as_str()) {
+                    self.data.current_session = None;
+                    self.data.epoch = self.data.epoch.wrapping_add(1);
+                    self.rows.borrow_mut().clear();
+                    self.scroller.update(cx, |state, cx| state.reset(0, cx));
+                    self.show_home = true;
+                }
+                self.data.error = None;
+                self.data.notice = Some("Session deleted".into());
+                self.refresh_sessions();
+            }
+            Event::Exported { filename, contents } => {
+                self.save_export(filename, contents, cx);
+            }
             Event::StreamDisconnected => {
                 self.data.stream_connected = false;
             }
@@ -1034,6 +1170,7 @@ impl Zoc {
             }
             Event::Error(text) => {
                 self.data.error = Some(text);
+                self.data.notice = None;
                 self.data.pending_send.clear();
             }
         }
@@ -1318,12 +1455,14 @@ impl Zoc {
     fn toggle_working(&mut self, cx: &mut Context<Self>) {
         self.data.prefs.working_expanded = !self.data.prefs.working_expanded;
         self.data.prefs.save();
+        self.load_visible_branches();
         cx.notify();
     }
 
     fn toggle_recent(&mut self, cx: &mut Context<Self>) {
         self.data.prefs.recent_expanded = !self.data.prefs.recent_expanded;
         self.data.prefs.save();
+        self.load_visible_branches();
         cx.notify();
     }
 
@@ -1546,6 +1685,37 @@ impl Zoc {
         cx.notify();
     }
 
+    fn export_menu_session(&mut self, cx: &mut Context<Self>) {
+        let Some(session) = self.menu_session() else {
+            return;
+        };
+        self.send_command(Command::ExportSession {
+            session: session.id.0.clone(),
+        });
+        cx.notify();
+    }
+
+    fn delete_menu_session(&mut self, cx: &mut Context<Self>) {
+        let Some(session) = self.menu_session() else {
+            return;
+        };
+        let title = session
+            .title
+            .clone()
+            .filter(|title| !title.trim().is_empty())
+            .unwrap_or_else(|| "Session".into());
+        self.confirm_delete = Some((session.id.0, title));
+        cx.notify();
+    }
+
+    fn confirm_delete_session(&mut self, cx: &mut Context<Self>) {
+        let Some((session, _)) = self.confirm_delete.clone() else {
+            return;
+        };
+        self.send_command(Command::Delete { session });
+        cx.notify();
+    }
+
     fn open_selected(&mut self, id: String, cx: &mut Context<Self>) {
         self.show_home = false;
         self.show_connection = false;
@@ -1732,28 +1902,28 @@ impl Zoc {
                         ),
                 );
         } else {
-            for group in [
-                InboxGroup::Attention,
-                InboxGroup::Unread,
-                InboxGroup::Recent,
-            ] {
-                let entries = self.data.sorted_inbox(group, &self.filter);
-                total += entries.len();
-                if entries.is_empty() {
-                    continue;
-                }
+            let visible_groups = self.visible_inbox_groups();
+            let current = self.inbox_current_extra(&visible_groups);
+            if let Some(session) = current {
+                total += 1;
+                groups = groups.child(
+                    v_flex()
+                        .pb(px(10.))
+                        .child(self.render_inbox_card(&session, false, now, cx)),
+                );
+            }
 
-                let (visible, more_label) = if group == InboxGroup::Recent {
+            for (group, visible) in visible_groups {
+                total += visible.len();
+                let more_label = if group == InboxGroup::Recent {
+                    let count = self.data.sorted_inbox(group, &self.filter).len();
                     if self.data.prefs.recent_expanded {
-                        (entries.clone(), (entries.len() > 10).then_some("Show less"))
+                        (count > 10).then_some("Show less")
                     } else {
-                        (
-                            entries.iter().take(10).cloned().collect(),
-                            (entries.len() > 10).then_some("Show more"),
-                        )
+                        (count > 10).then_some("Show more")
                     }
                 } else {
-                    (entries.clone(), None)
+                    None
                 };
 
                 groups = groups.child(
@@ -1982,6 +2152,15 @@ impl Zoc {
         let menu_id = id.clone();
         let unread = status.is_unread();
         let focused = self.inbox_cursor.as_deref() == Some(id.as_str());
+        let meta_id = id.clone();
+        let branch = self
+            .data
+            .branches
+            .get(&directory)
+            .and_then(|branch| branch.clone());
+        let worktree = self.project_for_session(session).is_some_and(|project| {
+            project.canonical.as_str().trim_end_matches('/') != directory.trim_end_matches('/')
+        });
 
         let has_cue = status.is_working() || status.is_attention() || unread;
         let status_cue: AnyElement = if status.is_working() {
@@ -2024,6 +2203,9 @@ impl Zoc {
             .when(selected, |card| card.hover(|style| style.bg(t::pressed())))
             .when(focused && !selected, |card| card.bg(t::hover()))
             .on_click(cx.listener(move |this, _, window, cx| {
+                if this.confirm_delete.is_some() {
+                    return;
+                }
                 this.inbox_cursor = Some(id.clone());
                 window.focus(&this.inbox_focus, cx);
                 this.switch_session(id.clone(), window, cx)
@@ -2036,6 +2218,7 @@ impl Zoc {
                     Box::new(ArchiveMenuSession) as Box<dyn Action>
                 };
                 menu.menu("Rename", Box::new(RenameMenuSession))
+                    .menu("Export…", Box::new(ExportMenuSession))
                     .menu(
                         if unread {
                             "Mark as read"
@@ -2049,6 +2232,8 @@ impl Zoc {
                         if archived { "Unarchive" } else { "Archive" },
                         archive_action,
                     )
+                    .separator()
+                    .menu("Delete…", Box::new(DeleteMenuSession))
             })
             .child(
                 h_flex()
@@ -2096,6 +2281,42 @@ impl Zoc {
                             .line_height(px(16.))
                             .text_color(t::text_muted())
                             .child(project_name),
+                    )
+                    .child(
+                        h_flex()
+                            .flex_shrink_0()
+                            .gap(px(4.))
+                            .when(worktree, |row| {
+                                let directory = directory.clone();
+                                row.child(
+                                    div()
+                                        .id(format!("inbox-worktree-{meta_id}"))
+                                        .tooltip(move |window, cx| {
+                                            Tooltip::new(directory.clone()).build(window, cx)
+                                        })
+                                        .child(
+                                            Icon::default()
+                                                .data(t::ICON_WORKTREE.as_bytes())
+                                                .size(px(14.))
+                                                .text_color(t::icon_muted()),
+                                        ),
+                                )
+                            })
+                            .when_some(branch, |row, branch| {
+                                row.child(
+                                    div()
+                                        .id(format!("inbox-branch-{meta_id}"))
+                                        .tooltip(move |window, cx| {
+                                            Tooltip::new(branch.clone()).build(window, cx)
+                                        })
+                                        .child(
+                                            Icon::default()
+                                                .data(t::ICON_BRANCH.as_bytes())
+                                                .size(px(14.))
+                                                .text_color(t::icon_muted()),
+                                        ),
+                                )
+                            }),
                     )
                     .child(
                         h_flex()
@@ -2293,6 +2514,9 @@ impl Zoc {
                     .cursor_pointer()
                     .hover(|style| style.bg(t::layer_01()))
                     .on_click(cx.listener(move |this, _, window, cx| {
+                        if this.confirm_delete.is_some() {
+                            return;
+                        }
                         this.switch_session(id.clone(), window, cx)
                     }))
                     .child(
@@ -4368,6 +4592,79 @@ impl Zoc {
     }
 }
 
+impl Zoc {
+    fn render_delete_dialog(&self, cx: &mut Context<Self>) -> AnyElement {
+        let Some((_, title)) = self.confirm_delete.clone() else {
+            return div().into_any_element();
+        };
+        div()
+            .id("delete-session-dialog")
+            .absolute()
+            .top(px(0.))
+            .left(px(0.))
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(rgba(0x000000b3))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.confirm_delete = None;
+                cx.notify();
+            }))
+            .child(
+                v_flex()
+                    .w(px(420.))
+                    .gap(px(16.))
+                    .p(px(20.))
+                    .rounded(px(10.))
+                    .bg(t::layer_01())
+                    .border_1()
+                    .border_color(t::border_muted())
+                    .child(
+                        div()
+                            .text_size(px(16.))
+                            .line_height(px(20.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Delete session"),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .line_height(px(20.))
+                            .text_color(t::text_muted())
+                            .child(format!("Delete session \"{title}\"?")),
+                    )
+                    .child(
+                        h_flex()
+                            .justify_end()
+                            .gap(px(8.))
+                            .child(
+                                Button::new("cancel-delete")
+                                    .small()
+                                    .ghost()
+                                    .label("Cancel")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        cx.stop_propagation();
+                                        this.confirm_delete = None;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                Button::new("confirm-delete")
+                                    .small()
+                                    .danger()
+                                    .label("Delete session")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        cx.stop_propagation();
+                                        this.confirm_delete_session(cx)
+                                    })),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
+}
+
 impl Render for Zoc {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let client_decorated = matches!(window.window_decorations(), Decorations::Client { .. });
@@ -4377,6 +4674,7 @@ impl Render for Zoc {
             .size_full()
             .bg(t::deep())
             .text_color(t::text_base())
+            .relative()
             .on_action(cx.listener(Self::on_new))
             .on_action(cx.listener(Self::on_send))
             .on_action(cx.listener(Self::on_focus_composer))
@@ -4394,6 +4692,12 @@ impl Render for Zoc {
                 this.archive_menu_session(false, cx)
             }))
             .capture_key_down(cx.listener(Self::on_picker_key))
+            .on_action(
+                cx.listener(|this, _: &ExportMenuSession, _, cx| this.export_menu_session(cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &DeleteMenuSession, _, cx| this.delete_menu_session(cx)),
+            )
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
                 if !this.resizing_sidebar {
                     return;
@@ -4462,6 +4766,49 @@ impl Render for Zoc {
                             }),
                     ),
             )
+            .when_some(self.data.notice.as_ref(), |view, notice| {
+                view.child(
+                    h_flex()
+                        .absolute()
+                        .bottom(px(16.))
+                        .right(px(16.))
+                        .max_w(px(360.))
+                        .gap(px(8.))
+                        .p(px(12.))
+                        .rounded(px(8.))
+                        .bg(t::layer_01())
+                        .border_1()
+                        .border_color(t::border_muted())
+                        .child(
+                            div()
+                                .size(px(6.))
+                                .flex_shrink_0()
+                                .rounded(px(3.))
+                                .bg(rgb(t::SUCCESS)),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_size(px(13.))
+                                .text_color(t::text_base())
+                                .child(notice.clone()),
+                        )
+                        .child(
+                            Button::new("dismiss-notice")
+                                .small()
+                                .ghost()
+                                .label("×")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.data.notice = None;
+                                    cx.notify();
+                                })),
+                        ),
+                )
+            })
+            .when_some(self.confirm_delete.clone(), |view, _| {
+                view.child(self.render_delete_dialog(cx))
+            })
     }
 }
 
