@@ -64,6 +64,22 @@ fn default_true() -> bool {
     true
 }
 
+pub const SIDEBAR_DEFAULT_WIDTH: f32 = 344.;
+pub const SIDEBAR_MIN_WIDTH: f32 = 136.;
+pub const SIDEBAR_MAX_WIDTH: f32 = 640.;
+
+fn default_sidebar_width() -> f32 {
+    SIDEBAR_DEFAULT_WIDTH
+}
+
+pub fn clamp_sidebar_width(width: f32) -> f32 {
+    if width.is_finite() {
+        width.clamp(SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH)
+    } else {
+        SIDEBAR_DEFAULT_WIDTH
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Preferences {
     pub endpoint: Option<String>,
@@ -77,6 +93,8 @@ pub struct Preferences {
     pub working_expanded: bool,
     #[serde(default)]
     pub recent_expanded: bool,
+    #[serde(default = "default_sidebar_width")]
+    pub sidebar_width: f32,
 }
 
 fn prefs_path() -> Option<PathBuf> {
@@ -427,6 +445,16 @@ mod tests {
             ..Default::default()
         }
     }
+    #[test]
+    fn sidebar_width_uses_official_bounds_and_survives_bad_values() {
+        assert_eq!(clamp_sidebar_width(200.), 200.);
+        assert_eq!(clamp_sidebar_width(0.), SIDEBAR_MIN_WIDTH);
+        assert_eq!(clamp_sidebar_width(9999.), SIDEBAR_MAX_WIDTH);
+        assert_eq!(clamp_sidebar_width(f32::NAN), SIDEBAR_DEFAULT_WIDTH);
+        let prefs: Preferences = serde_json::from_str("{}").unwrap();
+        assert_eq!(prefs.sidebar_width, SIDEBAR_DEFAULT_WIDTH);
+    }
+
     #[test]
     fn message_updates_replace_only_the_matching_transcript_rows() {
         let mut state = AppState::default();

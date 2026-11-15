@@ -23,7 +23,7 @@ This checklist uses **implemented in code** separately from **verified running**
 | File preview | Partial: UTF-8 text and Markdown | Pending |
 | Git working tree changes | Partial | Pending |
 | Image attachments/previews | Not yet implemented | Pending |
-| Resizable sidebar | Not yet: fixed 344px | N/A |
+| Resizable sidebar | Implemented: 136–640px, persisted | Synthetic service only |
 | Resizable preview | Partial: width controls | Pending |
 | Terminal tabs | Deferred | N/A |
 | Multi-session tabs | Deferred | N/A |

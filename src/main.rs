@@ -3,7 +3,7 @@ mod state;
 mod theme;
 
 use api::{Command, Event, ModelRef, model_display};
-use gpui_kit::base::StyledExt as _;
+use gpui_kit::base::{InteractiveElementExt as _, StyledExt as _};
 use gpui_kit::component::{
     ActiveTheme, Icon, Sizable as _, TitleBar,
     button::{Button, ButtonVariants as _},
@@ -18,7 +18,9 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use serde_json::Value;
-use state::{AppState, InboxGroup, InboxStatus, session_since};
+use state::{
+    AppState, InboxGroup, InboxStatus, SIDEBAR_DEFAULT_WIDTH, clamp_sidebar_width, session_since,
+};
 use std::{
     borrow::Cow, cell::RefCell, collections::HashMap, rc::Rc, sync::mpsc::Sender, time::Duration,
 };
@@ -103,6 +105,7 @@ pub struct Zoc {
     show_preview: bool,
     show_reasoning: bool,
     sidebar_width: f32,
+    resizing_sidebar: bool,
     preview_width: f32,
     menu_target: Rc<RefCell<Option<String>>>,
     _subscriptions: Vec<Subscription>,
@@ -114,6 +117,7 @@ impl Zoc {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let local = api::discover();
         let data = AppState::default();
+        let sidebar_width = clamp_sidebar_width(data.prefs.sidebar_width);
         let server_url = local
             .as_ref()
             .map(|s| s.url.clone())
@@ -214,7 +218,8 @@ impl Zoc {
             show_variants: false,
             show_preview: false,
             show_reasoning: false,
-            sidebar_width: 344.,
+            sidebar_width,
+            resizing_sidebar: false,
             preview_width: 420.,
             menu_target: Rc::new(RefCell::new(None)),
             _subscriptions: vec![subscription],
@@ -938,6 +943,17 @@ impl Zoc {
         cx.notify();
     }
 
+    fn finish_sidebar_resize(&mut self, cx: &mut Context<Self>) {
+        if !self.resizing_sidebar {
+            return;
+        }
+        self.resizing_sidebar = false;
+        self.sidebar_width = clamp_sidebar_width(self.sidebar_width);
+        self.data.prefs.sidebar_width = self.sidebar_width;
+        self.data.prefs.save();
+        cx.notify();
+    }
+
     fn menu_session(&self) -> Option<api::Session> {
         let id = self.menu_target.borrow().clone()?;
         self.data
@@ -1260,9 +1276,11 @@ impl Zoc {
         let working_expanded = self.data.prefs.working_expanded;
 
         v_flex()
+            .relative()
             .w(px(self.sidebar_width))
             .h_full()
             .flex_shrink_0()
+            .overflow_hidden()
             .bg(t::deep())
             .pl(px(11.))
             .pr(px(3.))
@@ -1317,6 +1335,31 @@ impl Zoc {
                     .min_h_0()
                     .overflow_y_scrollbar()
                     .child(groups),
+            )
+            .child(
+                div()
+                    .id("sidebar-resize")
+                    .absolute()
+                    .top(px(0.))
+                    .right(px(0.))
+                    .h_full()
+                    .w(px(5.))
+                    .cursor(CursorStyle::ResizeLeftRight)
+                    .when(self.resizing_sidebar, |handle| handle.bg(t::border_base()))
+                    .hover(|style| style.bg(t::border_base()))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, window, _| {
+                            this.resizing_sidebar = true;
+                            window.prevent_default();
+                        }),
+                    )
+                    .on_double_click(cx.listener(|this, _, _, cx| {
+                        this.sidebar_width = SIDEBAR_DEFAULT_WIDTH;
+                        this.data.prefs.sidebar_width = SIDEBAR_DEFAULT_WIDTH;
+                        this.data.prefs.save();
+                        cx.notify();
+                    })),
             )
             .when(!working.is_empty(), |view| {
                 view.child(
@@ -2844,6 +2887,24 @@ impl Render for Zoc {
             .on_action(cx.listener(|this, _: &UnarchiveMenuSession, _, cx| {
                 this.archive_menu_session(false, cx)
             }))
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                if !this.resizing_sidebar {
+                    return;
+                }
+                let next = clamp_sidebar_width(event.position.x.as_f32());
+                if (next - this.sidebar_width).abs() >= 0.5 {
+                    this.sidebar_width = next;
+                    cx.notify();
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| this.finish_sidebar_resize(cx)),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| this.finish_sidebar_resize(cx)),
+            )
             .when(client_decorated, |view| {
                 view.child(self.render_titlebar(cx))
             })
