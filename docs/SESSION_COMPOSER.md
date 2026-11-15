@@ -46,7 +46,7 @@ Reference: `anomalyco/opencode` at commit
 ## Verification performed
 
 - Podman Fedora 45: `cargo fmt --all --check`, `cargo clippy --all-targets --
-  -D warnings`, 18 unit tests, `cargo build --release`, `zoc --check`.
+  -D warnings`, 20 unit tests, `cargo build --release`, `zoc --check`.
 - Xvfb + openbox with a disposable mock OpenCode transcript: inspected user and
   assistant turns, reasoning reveal, Markdown headings/lists/code, compact tool
   rows, expanded red/green diff with old/new line-number gutters, three context
