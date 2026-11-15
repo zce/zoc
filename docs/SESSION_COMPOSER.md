@@ -27,8 +27,9 @@ Reference: `anomalyco/opencode` at commit
   control is the official light 28px square, shows the stop glyph while a run is
   active, and is disabled at 40% when the prompt is empty or pending.
 - Model, agent and variant pickers are compact 320px panels above the composer
-  with selected check marks and bounded scrolling. Opening one picker closes the
-  others.
+  with selected check marks, a shared search field, bounded scrolling and
+  filtering by model/provider/agent/variant name. Opening one picker closes the
+  others and focuses search.
 - Permission requests use a neutral raised layer-01 dock with a warning icon,
   monospace resource patterns and the official action order: Reject, Always
   allow, Allow once. Form requests use the same surface with native string,
@@ -47,8 +48,8 @@ Reference: `anomalyco/opencode` at commit
 - Xvfb + openbox with a disposable mock OpenCode transcript: inspected user and
   assistant turns, reasoning reveal, Markdown headings/lists/code, compact tool
   rows, expanded red/green diff, file preview open, permission dock, native
-  question fields (including a conditional field and custom option input), model
-  picker and composer states. An SSE `session.text.delta` appended text into the
+  question fields (including a conditional field and custom option input),
+  filtered model picker and composer states. An SSE `session.text.delta` appended text into the
   open assistant row in place and the timeline stayed at its tail.
 - This did not use the real OpenCode service and did not exercise streaming
   deltas, long transcripts, attachments, images or real syntax coverage.

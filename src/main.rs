@@ -210,6 +210,7 @@ pub struct Zoc {
     password: Entity<InputState>,
     rename: Entity<InputState>,
     search: Entity<InputState>,
+    picker_search: Entity<InputState>,
     form_inputs: RefCell<HashMap<String, Entity<InputState>>>,
     form_values: RefCell<HashMap<String, Value>>,
     preview_view: Entity<TextViewState>,
@@ -261,6 +262,7 @@ impl Zoc {
         }
         let rename = cx.new(|cx| InputState::new(window, cx).placeholder("Session title"));
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search sessions"));
+        let picker_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search"));
         let composer = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .auto_grow(2, 8)
@@ -270,6 +272,7 @@ impl Zoc {
         let scroller = cx.new(|cx| MessageScrollerState::new(0, cx));
         cx.observe(&scroller, |_, _, cx| cx.notify()).detach();
         cx.observe(&composer, |_, _, cx| cx.notify()).detach();
+        cx.observe(&picker_search, |_, _, cx| cx.notify()).detach();
         let inbox_focus = cx.focus_handle();
         let inbox_scroll = ScrollHandle::new();
         let inbox_focus_subscription = cx.on_focus(&inbox_focus, window, |this, _, cx| {
@@ -337,6 +340,7 @@ impl Zoc {
             password,
             rename,
             search,
+            picker_search,
             form_inputs: RefCell::new(HashMap::new()),
             form_values: RefCell::new(HashMap::new()),
             preview_view,
@@ -3080,15 +3084,30 @@ impl Zoc {
             .overflow_y_scrollbar()
             .child(
                 div()
-                    .h(px(24.))
-                    .px(px(8.))
+                    .h(px(30.))
+                    .w_full()
+                    .px(px(4.))
                     .flex()
                     .items_center()
-                    .text_size(px(12.))
-                    .text_color(t::text_faint())
-                    .child("Model"),
+                    .rounded(px(6.))
+                    .bg(t::layer_02())
+                    .border_1()
+                    .border_color(t::border_muted())
+                    .child(
+                        Input::new(&self.picker_search)
+                            .appearance(false)
+                            .bordered(false)
+                            .small(),
+                    ),
             );
-        for model in self.data.models.iter().take(75) {
+        let query = self.picker_search.read(cx).value().to_lowercase();
+        let models = self.data.models.iter().filter(|model| {
+            query.is_empty()
+                || model.name.to_lowercase().contains(&query)
+                || model.provider_id.0.to_lowercase().contains(&query)
+                || model.model_id.to_lowercase().contains(&query)
+        });
+        for model in models.take(75) {
             let model_ref = ModelRef {
                 provider_id: model.provider_id.clone(),
                 id: model.model_id.clone(),
@@ -3140,15 +3159,28 @@ impl Zoc {
             .overflow_y_scrollbar()
             .child(
                 div()
-                    .h(px(24.))
-                    .px(px(8.))
+                    .h(px(30.))
+                    .w_full()
+                    .px(px(4.))
                     .flex()
                     .items_center()
-                    .text_size(px(12.))
-                    .text_color(t::text_faint())
-                    .child("Agent"),
+                    .rounded(px(6.))
+                    .bg(t::layer_02())
+                    .border_1()
+                    .border_color(t::border_muted())
+                    .child(
+                        Input::new(&self.picker_search)
+                            .appearance(false)
+                            .bordered(false)
+                            .small(),
+                    ),
             );
-        for agent in &self.data.agents {
+        let query = self.picker_search.read(cx).value().to_lowercase();
+        for agent in self.data.agents.iter().filter(|agent| {
+            query.is_empty()
+                || agent.name.to_lowercase().contains(&query)
+                || agent.id.0.to_lowercase().contains(&query)
+        }) {
             let id = agent.id.0.clone();
             let selected = current.as_deref() == Some(id.as_str());
             view = view.child(
@@ -3213,15 +3245,28 @@ impl Zoc {
             .overflow_y_scrollbar()
             .child(
                 div()
-                    .h(px(24.))
-                    .px(px(8.))
+                    .h(px(30.))
+                    .w_full()
+                    .px(px(4.))
                     .flex()
                     .items_center()
-                    .text_size(px(12.))
-                    .text_color(t::text_faint())
-                    .child("Variant"),
+                    .rounded(px(6.))
+                    .bg(t::layer_02())
+                    .border_1()
+                    .border_color(t::border_muted())
+                    .child(
+                        Input::new(&self.picker_search)
+                            .appearance(false)
+                            .bordered(false)
+                            .small(),
+                    ),
             );
-        for variant in &model_info.variants {
+        let query = self.picker_search.read(cx).value().to_lowercase();
+        for variant in model_info
+            .variants
+            .iter()
+            .filter(|variant| query.is_empty() || variant.id.to_lowercase().contains(&query))
+        {
             let id = variant.id.clone();
             let mut next = base.clone();
             next.variant = Some(id.clone());
@@ -3340,10 +3385,14 @@ impl Zoc {
                                     .small()
                                     .ghost()
                                     .label(self.data.selected_agent.as_deref().unwrap_or("Agent"))
-                                    .on_click(cx.listener(|this, _, _, cx| {
+                                    .on_click(cx.listener(|this, _, window, cx| {
                                         this.show_agents = !this.show_agents;
                                         this.show_models = false;
                                         this.show_variants = false;
+                                        this.picker_search.update(cx, |state, cx| {
+                                            state.set_value("", window, cx);
+                                            state.focus(window, cx);
+                                        });
                                         cx.notify();
                                     })),
                             )
@@ -3352,10 +3401,14 @@ impl Zoc {
                                     .small()
                                     .ghost()
                                     .label(model_label)
-                                    .on_click(cx.listener(|this, _, _, cx| {
+                                    .on_click(cx.listener(|this, _, window, cx| {
                                         this.show_models = !this.show_models;
                                         this.show_agents = false;
                                         this.show_variants = false;
+                                        this.picker_search.update(cx, |state, cx| {
+                                            state.set_value("", window, cx);
+                                            state.focus(window, cx);
+                                        });
                                         cx.notify();
                                     })),
                             )
@@ -3365,8 +3418,12 @@ impl Zoc {
                                         .small()
                                         .ghost()
                                         .label("Variant")
-                                        .on_click(cx.listener(|this, _, _, cx| {
+                                        .on_click(cx.listener(|this, _, window, cx| {
                                             this.show_variants = !this.show_variants;
+                                            this.picker_search.update(cx, |state, cx| {
+                                                state.set_value("", window, cx);
+                                                state.focus(window, cx);
+                                            });
                                             cx.notify();
                                         })),
                                 )
