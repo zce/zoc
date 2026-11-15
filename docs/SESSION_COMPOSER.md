@@ -50,10 +50,12 @@ Reference: `anomalyco/opencode` at commit
 - Podman Fedora 45: 18 unit tests.
 - Xvfb + openbox with a disposable mock OpenCode transcript: inspected user and
   assistant turns, reasoning reveal, Markdown headings/lists/code, compact tool
-  rows, expanded red/green diff with line numbers, file preview open, permission
-  dock, native question fields (including a conditional field and custom option
-  input), provider-grouped model picker, agent mode grouping, keyboard
-  Up/Down/Enter selection and composer states. An SSE `session.text.delta` appended text into the
+  rows, expanded red/green diff, file preview open, permission dock, native
+  question fields (including a conditional field and custom option input),
+  provider-grouped model picker, agent mode grouping, keyboard Up/Down/Enter
+  selection and composer states. The new line-number/context diff arithmetic is
+  covered by a unit test; the gutter rendering was not re-inspected after that
+  change. An SSE `session.text.delta` appended text into the
   open assistant row in place and the timeline stayed at its tail.
 - This did not use the real OpenCode service and did not exercise streaming
   deltas, long transcripts, attachments, images or real syntax coverage.
