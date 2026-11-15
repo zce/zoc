@@ -1,6 +1,6 @@
-# Incremental deliveries
+# Incremental deliveries — original prototype plan
 
-ZOC ships through **small, inspectable GitHub Actions Artifacts**, not Releases. All work stays in [Draft PR #1](https://github.com/zce/zoc/pull/1) until v0.1 is genuinely usable. Each handoff names one thing to observe and records its exact CI run and commit SHA. A successful Rust build is not proof of a working native window.
+This records the **original v0.1 functional delivery sequence**. The initial stacked PRs have been consolidated into main; for the **current visual-parity priorities and Agent handoff**, follow [AGENT_HANDOFF.md](AGENT_HANDOFF.md). Deliver new work as focused PRs against main with inspectable GitHub Actions Artifacts, not Releases. Each handoff must name its actual CI run and commit SHA. A successful Rust build is not proof of a working native window.
 
 | Stage | Scope | What to observe | Release gate |
 |---|---|---|---|
