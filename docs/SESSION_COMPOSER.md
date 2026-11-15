@@ -19,11 +19,11 @@ Reference: `anomalyco/opencode` at commit
   paragraphs use the Inter body scale. Reasoning is muted behind the existing
   Thinking toggle.
 - Tool parts are compact 28px rows with a tool icon, label, subtitle/file,
-  status and disclosure chevron. Clicking the row expands a layer-01 body;
-  clicking a file subtitle opens the existing preview and does not toggle the
-  row. `edit` tools show a red/green diff with old/new line-number gutters,
-  three lines of context and added/removed counts; `write` shows added content;
-  other tools show raw output text.
+  status and disclosure chevron. Clicking anywhere on the row, including the
+  subtitle text, expands a layer-01 body; the separate file button opens the
+  existing preview without toggling the row. `edit` tools show a red/green diff
+  with old/new line-number gutters, three lines of context and added/removed
+  counts; `write` shows added content; other tools show raw output text.
 - Composer uses a 10px layer-01 card with 13px/20px editor text. The submit
   control is the official light 28px square, shows the stop glyph while a run is
   active, and is disabled at 40% when the prompt is empty or pending.
@@ -46,32 +46,31 @@ Reference: `anomalyco/opencode` at commit
 ## Verification performed
 
 - Podman Fedora 45: `cargo fmt --all --check`, `cargo clippy --all-targets --
-  -D warnings`, 15 unit tests, `cargo build --release`, `zoc --check`.
-- Podman Fedora 45: 18 unit tests.
+  -D warnings`, 18 unit tests, `cargo build --release`, `zoc --check`.
 - Xvfb + openbox with a disposable mock OpenCode transcript: inspected user and
   assistant turns, reasoning reveal, Markdown headings/lists/code, compact tool
-  rows, expanded red/green diff, file preview open, permission dock, native
+  rows, expanded red/green diff with old/new line-number gutters, three context
+  lines and added/removed counts, file preview open, permission dock, native
   question fields (including a conditional field and custom option input),
   provider-grouped model picker, agent mode grouping, keyboard Up/Down/Enter
-  selection and composer states. The new line-number/context diff arithmetic is
-  covered by a unit test; the gutter rendering was not re-inspected after that
-  change. An SSE `session.text.delta` appended text into the
-  open assistant row in place and the timeline stayed at its tail.
-- This did not use the real OpenCode service and did not exercise streaming
-  deltas, long transcripts, attachments, images or real syntax coverage.
+  selection and composer states. Tool-row clicks toggled expansion at the top
+  and after scrolling, including clicks on the subtitle; opening the file
+  preview did not toggle the row. An SSE `session.text.delta` appended text into
+  the open assistant row in place and the timeline stayed at its tail.
+- This did not use the real OpenCode service and did not exercise long
+  transcripts, attachments, images or real syntax coverage.
 
 ## Known gaps
 
 - No composer attachments, image paste or file/image preview inside the
   transcript.
-- Tool output is a simple two-block diff for edit/write; syntax-highlighted
-  line numbers, context lines and dedicated read/grep/task renderers are not
-  implemented.
+- Tool output is a simple unified diff for edit/write plus raw text for other
+  tools; it has no syntax highlighting or dedicated read/grep/task renderers.
 - Question forms support string, option, boolean, multiselect, `eq`/`neq`
   conditional fields and custom option text, but not external controls,
   server-side validation display or full official Select/Checkbox styling.
-- Model/agent pickers have no search, provider icons or grouping, and no keyboard
-  navigation.
+- Picker provider and model icons are letter tiles rather than official provider
+  artwork.
 - No token/cost/duration footer under responses or per-message action menus.
 - The file preview panel is the existing generic viewer, not the official review
   pane.

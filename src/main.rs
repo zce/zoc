@@ -2485,7 +2485,6 @@ impl Zoc {
                     };
                     let mut row_view = h_flex()
                         .id(format!("tool-{id}-{index}"))
-                        .relative()
                         .h(px(28.))
                         .w_full()
                         .gap(px(8.))
@@ -2493,6 +2492,10 @@ impl Zoc {
                         .rounded(px(6.))
                         .cursor_pointer()
                         .hover(|style| style.bg(t::layer_01()))
+                        .on_click({
+                            let toggle = toggle.clone();
+                            move |_, _, cx| toggle(cx)
+                        })
                         .child(div().id(format!("tool-toggle-{id}-{index}-icon")).child(
                             if running {
                                 gpui_kit::component::spinner::Spinner::new()
@@ -2558,19 +2561,6 @@ impl Zoc {
                                     }),
                             )
                         })
-                        .child(
-                            div()
-                                .id(format!("tool-toggle-{id}-{index}-surface"))
-                                .absolute()
-                                .top(px(0.))
-                                .left(px(0.))
-                                .size_full()
-                                .cursor_pointer()
-                                .on_click({
-                                    let toggle = toggle.clone();
-                                    move |_, _, cx| toggle(cx)
-                                }),
-                        )
                         .when_some(file.clone(), |row, file| {
                             let owner = owner.clone();
                             row.child(
