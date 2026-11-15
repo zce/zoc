@@ -53,14 +53,22 @@ enum Part {
         state: Entity<TextViewState>,
         reasoning: bool,
     },
-    Tool {
-        id: String,
-        name: String,
-        status: String,
-        detail: String,
-        file: Option<String>,
-    },
+    Tool(Box<ToolPart>),
     Other(String),
+}
+
+#[derive(Clone)]
+struct ToolPart {
+    id: String,
+    name: String,
+    status: String,
+    detail: String,
+    file: Option<String>,
+    command: Option<String>,
+    pattern: Option<String>,
+    old: Option<String>,
+    new: Option<String>,
+    content: Option<String>,
 }
 
 #[derive(Clone)]
@@ -116,6 +124,54 @@ fn markdown_style() -> TextViewStyle {
     style
 }
 
+fn form_option_chip(
+    id: String,
+    label: String,
+    selected: bool,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    div()
+        .id(id)
+        .h(px(28.))
+        .px(px(8.))
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .rounded(px(6.))
+        .border_1()
+        .border_color(if selected {
+            t::accent().opacity(0.6)
+        } else {
+            t::border_muted()
+        })
+        .bg(if selected {
+            t::accent().opacity(0.12)
+        } else {
+            t::layer_02()
+        })
+        .cursor_pointer()
+        .text_size(px(13.))
+        .text_color(t::text_base())
+        .hover(|style| style.bg(t::layer_01()))
+        .child(
+            div()
+                .size(px(14.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(7.))
+                .border_1()
+                .border_color(if selected {
+                    t::accent()
+                } else {
+                    t::border_muted()
+                })
+                .when(selected, |dot| {
+                    dot.child(div().size(px(6.)).rounded(px(3.)).bg(t::accent()))
+                }),
+        )
+        .child(label)
+}
+
 fn section_label(label: &'static str) -> AnyElement {
     div()
         .h(px(24.))
@@ -139,7 +195,8 @@ pub struct Zoc {
     password: Entity<InputState>,
     rename: Entity<InputState>,
     search: Entity<InputState>,
-    form_json: Entity<TextareaState>,
+    form_inputs: RefCell<HashMap<String, Entity<InputState>>>,
+    form_values: RefCell<HashMap<String, Value>>,
     preview_view: Entity<TextViewState>,
     scroller: Entity<MessageScrollerState>,
     rows: Rc<RefCell<Vec<MessageRow>>>,
@@ -193,11 +250,6 @@ impl Zoc {
             TextareaState::new(window, cx)
                 .auto_grow(2, 8)
                 .placeholder("Ask OpenCode anything…")
-        });
-        let form_json = cx.new(|cx| {
-            TextareaState::new(window, cx)
-                .rows(3)
-                .placeholder("{\"field\": \"answer\"}")
         });
         let preview_view = cx.new(|cx| TextViewState::markdown("", cx));
         let scroller = cx.new(|cx| MessageScrollerState::new(0, cx));
@@ -270,7 +322,8 @@ impl Zoc {
             password,
             rename,
             search,
-            form_json,
+            form_inputs: RefCell::new(HashMap::new()),
+            form_values: RefCell::new(HashMap::new()),
             preview_view,
             scroller,
             rows: Rc::new(RefCell::new(Vec::new())),
@@ -926,13 +979,24 @@ impl Zoc {
                             .and_then(|items| items.first())
                             .and_then(|item| item["text"].as_str())
                             .unwrap_or("");
-                        parts.push(Part::Tool {
+                        let text = |key: &str| {
+                            input[key]
+                                .as_str()
+                                .filter(|value| !value.is_empty())
+                                .map(str::to_owned)
+                        };
+                        parts.push(Part::Tool(Box::new(ToolPart {
                             id: part["id"].as_str().unwrap_or("").into(),
                             name: part["name"].as_str().unwrap_or("tool").into(),
                             status: part["state"]["status"].as_str().unwrap_or("running").into(),
-                            detail: detail.chars().take(1000).collect(),
+                            detail: detail.chars().take(4000).collect(),
                             file,
-                        });
+                            command: text("command"),
+                            pattern: text("pattern"),
+                            old: text("oldString"),
+                            new: text("newString"),
+                            content: text("content"),
+                        })));
                     }
                     other => parts.push(Part::Other(format!("[{other}]"))),
                 }
@@ -1147,6 +1211,123 @@ impl Zoc {
         self.data.prefs.sidebar_width = self.sidebar_width;
         self.data.prefs.save();
         cx.notify();
+    }
+
+    fn form_field_input(
+        &self,
+        key: &str,
+        placeholder: &str,
+        default: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<InputState> {
+        if let Some(input) = self.form_inputs.borrow().get(key).cloned() {
+            return input;
+        }
+        let input = cx.new(|cx| {
+            let mut state = InputState::new(window, cx).placeholder(placeholder.to_owned());
+            state.set_value(default, window, cx);
+            state
+        });
+        self.form_inputs
+            .borrow_mut()
+            .insert(key.to_owned(), input.clone());
+        input
+    }
+
+    fn form_answer(&self, form_id: &str, fields: &[Value], cx: &App) -> Result<Value, String> {
+        let mut answer = serde_json::Map::new();
+        for field in fields {
+            if field["hidden"].as_bool() == Some(true) {
+                continue;
+            }
+            let key = field["key"].as_str().unwrap_or("");
+            if key.is_empty() {
+                continue;
+            }
+            let value_key = format!("{form_id}:{key}");
+            let field_type = field["type"].as_str().unwrap_or("string");
+            let required = field["required"].as_bool().unwrap_or(false);
+            let label = field["title"].as_str().unwrap_or(key);
+
+            match field_type {
+                "string" if field["options"].is_array() => {
+                    let value = self
+                        .form_values
+                        .borrow()
+                        .get(&value_key)
+                        .cloned()
+                        .unwrap_or(Value::Null);
+                    if value.is_null() {
+                        if required {
+                            return Err(format!("Choose a value for {label}"));
+                        }
+                    } else {
+                        answer.insert(key.to_owned(), value);
+                    }
+                }
+                "string" => {
+                    let text = self
+                        .form_inputs
+                        .borrow()
+                        .get(&value_key)
+                        .map(|input| input.read(cx).value().to_string())
+                        .unwrap_or_default();
+                    if text.trim().is_empty() {
+                        if required {
+                            return Err(format!("Enter a value for {label}"));
+                        }
+                    } else {
+                        answer.insert(key.to_owned(), Value::String(text));
+                    }
+                }
+                "number" | "integer" => {
+                    let text = self
+                        .form_inputs
+                        .borrow()
+                        .get(&value_key)
+                        .map(|input| input.read(cx).value().to_string())
+                        .unwrap_or_default();
+                    if text.trim().is_empty() {
+                        if required {
+                            return Err(format!("Enter a value for {label}"));
+                        }
+                    } else if field_type == "integer" {
+                        let value = text
+                            .trim()
+                            .parse::<i64>()
+                            .map_err(|_| format!("{label} must be a whole number"))?;
+                        answer.insert(key.to_owned(), Value::from(value));
+                    } else {
+                        let value = text
+                            .trim()
+                            .parse::<f64>()
+                            .map_err(|_| format!("{label} must be a number"))?;
+                        answer.insert(key.to_owned(), Value::from(value));
+                    }
+                }
+                "boolean" => {
+                    let value = self
+                        .form_values
+                        .borrow()
+                        .get(&value_key)
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    answer.insert(key.to_owned(), Value::Bool(value));
+                }
+                "multiselect" => {
+                    let value = self
+                        .form_values
+                        .borrow()
+                        .get(&value_key)
+                        .cloned()
+                        .unwrap_or_else(|| Value::Array(Vec::new()));
+                    answer.insert(key.to_owned(), value);
+                }
+                _ => {}
+            }
+        }
+        Ok(Value::Object(answer))
     }
 
     fn menu_session(&self) -> Option<api::Session> {
@@ -2093,30 +2274,51 @@ impl Zoc {
                         )
                         .into_any_element()
                 }
-                Part::Tool {
-                    id,
-                    name,
-                    status,
-                    detail,
-                    file,
-                } => {
+                Part::Tool(tool) => {
+                    let ToolPart {
+                        id,
+                        name,
+                        status,
+                        detail,
+                        file,
+                        command,
+                        pattern,
+                        old,
+                        new,
+                        content,
+                    } = *tool;
                     let expanded = owner.read(cx).expanded_tools.contains(&id);
                     let running = matches!(status.as_str(), "running" | "streaming" | "pending");
                     let label = tool_label(&name);
-                    let subtitle = file.clone().or_else(|| {
-                        detail
-                            .lines()
-                            .next()
-                            .map(str::trim)
-                            .filter(|line| !line.is_empty())
-                            .map(|line| line.chars().take(160).collect())
-                    });
+                    let subtitle = file
+                        .clone()
+                        .or_else(|| command.clone())
+                        .or_else(|| pattern.clone())
+                        .or_else(|| {
+                            detail
+                                .lines()
+                                .next()
+                                .map(str::trim)
+                                .filter(|line| !line.is_empty())
+                                .map(|line| line.chars().take(160).collect())
+                        });
                     let show_status =
                         !running && !matches!(status.as_str(), "completed" | "success" | "");
-                    let toggle_id = id.clone();
-                    let owner_toggle = owner.clone();
+                    let toggle = {
+                        let owner = owner.clone();
+                        let tool_id = id.clone();
+                        Rc::new(move |cx: &mut App| {
+                            owner.update(cx, |this, cx| {
+                                if !this.expanded_tools.remove(&tool_id) {
+                                    this.expanded_tools.insert(tool_id.clone());
+                                }
+                                cx.notify();
+                            });
+                        })
+                    };
                     let mut row_view = h_flex()
                         .id(format!("tool-{id}-{index}"))
+                        .relative()
                         .h(px(28.))
                         .w_full()
                         .gap(px(8.))
@@ -2124,31 +2326,38 @@ impl Zoc {
                         .rounded(px(6.))
                         .cursor_pointer()
                         .hover(|style| style.bg(t::layer_01()))
-                        .on_click(move |_, _, cx| {
-                            owner_toggle.update(cx, |this, cx| {
-                                if !this.expanded_tools.remove(&toggle_id) {
-                                    this.expanded_tools.insert(toggle_id.clone());
-                                }
-                                cx.notify();
-                            });
-                        })
-                        .child(if running {
-                            gpui_kit::component::spinner::Spinner::new()
-                                .xsmall()
-                                .icon(
-                                    Icon::default()
-                                        .data(t::ICON_ACTIVITY_RING.as_bytes())
-                                        .size(px(14.)),
-                                )
-                                .color(t::icon_muted())
-                                .into_any_element()
-                        } else {
-                            Icon::default()
-                                .data(tool_icon(&name).as_bytes())
-                                .size(px(16.))
-                                .text_color(t::icon_muted())
-                                .into_any_element()
-                        })
+                        .child(
+                            div()
+                                .id(format!("tool-toggle-{id}-{index}-surface"))
+                                .absolute()
+                                .top(px(0.))
+                                .left(px(0.))
+                                .size_full()
+                                .cursor_pointer()
+                                .on_click({
+                                    let toggle = toggle.clone();
+                                    move |_, _, cx| toggle(cx)
+                                }),
+                        )
+                        .child(div().id(format!("tool-toggle-{id}-{index}-icon")).child(
+                            if running {
+                                gpui_kit::component::spinner::Spinner::new()
+                                    .xsmall()
+                                    .icon(
+                                        Icon::default()
+                                            .data(t::ICON_ACTIVITY_RING.as_bytes())
+                                            .size(px(14.)),
+                                    )
+                                    .color(t::icon_muted())
+                                    .into_any_element()
+                            } else {
+                                Icon::default()
+                                    .data(tool_icon(&name).as_bytes())
+                                    .size(px(16.))
+                                    .text_color(t::icon_muted())
+                                    .into_any_element()
+                            },
+                        ))
                         .child(
                             div()
                                 .flex_shrink_0()
@@ -2160,7 +2369,7 @@ impl Zoc {
 
                     if let Some(subtitle) = subtitle {
                         let subtitle_view = div()
-                            .flex_1()
+                            .flex_shrink_1()
                             .min_w_0()
                             .truncate()
                             .text_size(px(13.))
@@ -2185,6 +2394,7 @@ impl Zoc {
                         } else {
                             row_view = row_view.child(subtitle_view);
                         }
+                        row_view = row_view.child(div().flex_1());
                     } else {
                         row_view = row_view.child(div().flex_1());
                     }
@@ -2212,22 +2422,59 @@ impl Zoc {
                             )
                         });
 
+                    let has_body =
+                        old.is_some() || new.is_some() || content.is_some() || !detail.is_empty();
                     let mut tool = v_flex().w_full().min_w_0().gap(px(4.)).child(row_view);
-                    if expanded && !detail.is_empty() {
-                        tool = tool.child(
-                            div()
-                                .w_full()
-                                .rounded(px(8.))
-                                .border_1()
-                                .border_color(t::border_muted())
-                                .bg(t::layer_01())
-                                .p(px(10.))
-                                .font_family(cx.theme().mono_font_family.clone())
-                                .text_size(px(12.))
-                                .line_height(px(18.))
-                                .text_color(t::text_muted())
-                                .child(detail),
-                        );
+                    if expanded && has_body {
+                        let mut body = v_flex()
+                            .w_full()
+                            .max_h(px(260.))
+                            .overflow_y_scrollbar()
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(t::border_muted())
+                            .bg(t::layer_01())
+                            .p(px(10.))
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .text_size(px(12.))
+                            .line_height(px(18.));
+                        if old.is_some() || new.is_some() {
+                            for (marker, text, color) in [
+                                ("-", old.as_deref(), t::danger()),
+                                ("+", new.as_deref(), rgb(0x49c970).into()),
+                            ] {
+                                let Some(text) = text else { continue };
+                                for line in text.lines().take(200) {
+                                    body = body.child(
+                                        div()
+                                            .w_full()
+                                            .px(px(4.))
+                                            .whitespace_nowrap()
+                                            .text_color(color)
+                                            .child(format!("{marker}{line}")),
+                                    );
+                                }
+                            }
+                        } else if let Some(content) = content.as_deref() {
+                            for line in content.lines().take(200) {
+                                body = body.child(
+                                    div()
+                                        .w_full()
+                                        .px(px(4.))
+                                        .whitespace_nowrap()
+                                        .text_color(rgb(0x49c970))
+                                        .child(format!("+{line}")),
+                                );
+                            }
+                        } else {
+                            body = body.child(
+                                div()
+                                    .whitespace_normal()
+                                    .text_color(t::text_muted())
+                                    .child(detail),
+                            );
+                        }
+                        tool = tool.child(body);
                     }
                     tool.into_any_element()
                 }
@@ -2282,7 +2529,7 @@ impl Zoc {
             .into_any_element()
     }
 
-    fn render_requests(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_requests(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let mut view = v_flex().w_full().max_w(px(720.)).mx_auto().gap(px(8.));
         for request in self.data.active_permissions() {
             let session = request["sessionID"].as_str().unwrap_or("").to_owned();
@@ -2402,38 +2649,268 @@ impl Zoc {
             let session = form["sessionID"].as_str().unwrap_or("").to_owned();
             let id = form["id"].as_str().unwrap_or("").to_owned();
             let title = form["title"].as_str().unwrap_or("Question").to_owned();
-            let mut fields = v_flex().gap(px(4.));
-            if let Some(items) = form["fields"].as_array() {
-                for field in items {
-                    let key = field["key"].as_str().unwrap_or("field");
-                    let field_title = field["title"].as_str().unwrap_or(key);
-                    let typ = field["type"].as_str().unwrap_or("string");
-                    fields = fields.child(
-                        div()
-                            .text_size(px(12.))
-                            .line_height(px(16.))
-                            .text_color(t::text_muted())
-                            .child(format!("{field_title} ({key}: {typ})")),
-                    );
-                    if let Some(options) = field["options"].as_array() {
-                        let opts = options
-                            .iter()
-                            .map(|item| format!("{}: {}", item["value"], item["label"]))
-                            .collect::<Vec<_>>()
-                            .join(" · ");
-                        fields = fields.child(
-                            div()
-                                .text_size(px(12.))
-                                .text_color(t::text_faint())
-                                .child(opts),
-                        );
-                    }
+            let form_fields = form["fields"].as_array().cloned().unwrap_or_default();
+            let mut fields_view = v_flex().w_full().gap(px(12.));
+
+            for field in &form_fields {
+                if field["hidden"].as_bool() == Some(true) {
+                    continue;
                 }
+                let key = field["key"].as_str().unwrap_or("field").to_owned();
+                let field_title = field["title"].as_str().unwrap_or(key.as_str()).to_owned();
+                let description = field["description"].as_str().map(str::to_owned);
+                let required = field["required"].as_bool().unwrap_or(false);
+                let field_type = field["type"].as_str().unwrap_or("string");
+                let value_key = format!("{id}:{key}");
+
+                let control: AnyElement = match field_type {
+                    "string" if field["options"].is_array() => {
+                        let default = field.get("default").cloned().unwrap_or(Value::Null);
+                        self.form_values
+                            .borrow_mut()
+                            .entry(value_key.clone())
+                            .or_insert(default);
+                        let current = self
+                            .form_values
+                            .borrow()
+                            .get(&value_key)
+                            .cloned()
+                            .unwrap_or(Value::Null);
+                        let mut chips = h_flex().flex_wrap().gap(px(6.));
+                        for option in field["options"].as_array().into_iter().flatten() {
+                            let value = option["value"].as_str().unwrap_or("").to_owned();
+                            let label = option["label"]
+                                .as_str()
+                                .unwrap_or(value.as_str())
+                                .to_owned();
+                            let selected = current.as_str() == Some(value.as_str());
+                            let target = value_key.clone();
+                            chips = chips.child(
+                                form_option_chip(
+                                    format!("form-{id}-{key}-{value}"),
+                                    label,
+                                    selected,
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        this.form_values
+                                            .borrow_mut()
+                                            .insert(target.clone(), Value::String(value.clone()));
+                                        cx.notify();
+                                    },
+                                )),
+                            );
+                        }
+                        chips.into_any_element()
+                    }
+                    "string" => {
+                        let default = field["default"].as_str().unwrap_or("");
+                        let placeholder = field["placeholder"].as_str().unwrap_or(&field_title);
+                        let input =
+                            self.form_field_input(&value_key, placeholder, default, window, cx);
+                        div()
+                            .h(px(30.))
+                            .w_full()
+                            .flex()
+                            .items_center()
+                            .rounded(px(6.))
+                            .bg(t::layer_02())
+                            .border_1()
+                            .border_color(t::border_muted())
+                            .child(Input::new(&input).appearance(false).bordered(false).small())
+                            .into_any_element()
+                    }
+                    "number" | "integer" => {
+                        let default = field
+                            .get("default")
+                            .map(|value| {
+                                value
+                                    .as_str()
+                                    .map(str::to_owned)
+                                    .unwrap_or_else(|| value.to_string())
+                            })
+                            .unwrap_or_default();
+                        let placeholder = field["placeholder"]
+                            .as_str()
+                            .unwrap_or(&field_title)
+                            .to_owned();
+                        let input =
+                            self.form_field_input(&value_key, &placeholder, &default, window, cx);
+                        div()
+                            .h(px(30.))
+                            .w_full()
+                            .flex()
+                            .items_center()
+                            .rounded(px(6.))
+                            .bg(t::layer_02())
+                            .border_1()
+                            .border_color(t::border_muted())
+                            .child(Input::new(&input).appearance(false).bordered(false).small())
+                            .into_any_element()
+                    }
+                    "boolean" => {
+                        let default = field["default"].as_bool().unwrap_or(false);
+                        self.form_values
+                            .borrow_mut()
+                            .entry(value_key.clone())
+                            .or_insert(Value::Bool(default));
+                        let current = self
+                            .form_values
+                            .borrow()
+                            .get(&value_key)
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false);
+                        let yes_key = value_key.clone();
+                        let no_key = value_key.clone();
+                        h_flex()
+                            .gap(px(6.))
+                            .child(
+                                form_option_chip(
+                                    format!("form-{id}-{key}-yes"),
+                                    "Yes".into(),
+                                    current,
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        this.form_values
+                                            .borrow_mut()
+                                            .insert(yes_key.clone(), Value::Bool(true));
+                                        cx.notify();
+                                    },
+                                )),
+                            )
+                            .child(
+                                form_option_chip(
+                                    format!("form-{id}-{key}-no"),
+                                    "No".into(),
+                                    !current,
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        this.form_values
+                                            .borrow_mut()
+                                            .insert(no_key.clone(), Value::Bool(false));
+                                        cx.notify();
+                                    },
+                                )),
+                            )
+                            .into_any_element()
+                    }
+                    "multiselect" => {
+                        let default = field
+                            .get("default")
+                            .cloned()
+                            .unwrap_or_else(|| Value::Array(Vec::new()));
+                        self.form_values
+                            .borrow_mut()
+                            .entry(value_key.clone())
+                            .or_insert(default);
+                        let current = self
+                            .form_values
+                            .borrow()
+                            .get(&value_key)
+                            .and_then(Value::as_array)
+                            .cloned()
+                            .unwrap_or_default();
+                        let mut chips = h_flex().flex_wrap().gap(px(6.));
+                        for option in field["options"].as_array().into_iter().flatten() {
+                            let value = option["value"].as_str().unwrap_or("").to_owned();
+                            let label = option["label"]
+                                .as_str()
+                                .unwrap_or(value.as_str())
+                                .to_owned();
+                            let selected = current
+                                .iter()
+                                .any(|item| item.as_str() == Some(value.as_str()));
+                            let target = value_key.clone();
+                            chips = chips.child(
+                                form_option_chip(
+                                    format!("form-{id}-{key}-{value}"),
+                                    label,
+                                    selected,
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        let mut values = this
+                                            .form_values
+                                            .borrow()
+                                            .get(&target)
+                                            .and_then(Value::as_array)
+                                            .cloned()
+                                            .unwrap_or_default();
+                                        if let Some(index) = values
+                                            .iter()
+                                            .position(|item| item.as_str() == Some(value.as_str()))
+                                        {
+                                            values.remove(index);
+                                        } else {
+                                            values.push(Value::String(value.clone()));
+                                        }
+                                        this.form_values
+                                            .borrow_mut()
+                                            .insert(target.clone(), Value::Array(values));
+                                        cx.notify();
+                                    },
+                                )),
+                            );
+                        }
+                        chips.into_any_element()
+                    }
+                    "external" => div()
+                        .text_size(px(12.))
+                        .line_height(px(18.))
+                        .text_color(t::text_faint())
+                        .child(field["url"].as_str().unwrap_or("External field").to_owned())
+                        .into_any_element(),
+                    other => div()
+                        .text_size(px(12.))
+                        .line_height(px(18.))
+                        .text_color(t::text_faint())
+                        .child(format!("Unsupported field type: {other}"))
+                        .into_any_element(),
+                };
+
+                fields_view = fields_view.child(
+                    v_flex()
+                        .w_full()
+                        .gap(px(6.))
+                        .child(
+                            h_flex()
+                                .gap(px(4.))
+                                .child(
+                                    div()
+                                        .text_size(px(13.))
+                                        .line_height(px(18.))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .child(field_title),
+                                )
+                                .when(required, |row| {
+                                    row.child(
+                                        div().text_size(px(13.)).text_color(t::accent()).child("*"),
+                                    )
+                                }),
+                        )
+                        .when_some(description, |field_view, description| {
+                            field_view.child(
+                                div()
+                                    .text_size(px(12.))
+                                    .line_height(px(18.))
+                                    .text_color(t::text_faint())
+                                    .child(description),
+                            )
+                        })
+                        .child(control),
+                );
             }
+
+            let session_for_submit = session.clone();
+            let id_for_submit = id.clone();
+            let fields_for_submit = form_fields.clone();
+            let has_fields = !form_fields.is_empty();
             view = view.child(
                 v_flex()
                     .w_full()
-                    .gap(px(10.))
+                    .gap(px(12.))
                     .border_1()
                     .border_color(t::border_muted())
                     .rounded(px(12.))
@@ -2457,8 +2934,13 @@ impl Zoc {
                                     .child("Question"),
                             ),
                     )
-                    .child(fields)
-                    .child(Textarea::new(&self.form_json))
+                    .child(
+                        div()
+                            .w_full()
+                            .max_h(px(300.))
+                            .overflow_y_scrollbar()
+                            .child(fields_view),
+                    )
                     .child(
                         h_flex().justify_end().child(
                             div()
@@ -2475,25 +2957,29 @@ impl Zoc {
                                 .cursor_pointer()
                                 .hover(|style| style.bg(rgb(0xf2f2f2)))
                                 .role(Role::Button)
-                                .aria_label("Submit answers")
+                                .aria_label(if has_fields {
+                                    "Submit answers"
+                                } else {
+                                    "Continue"
+                                })
                                 .on_click(cx.listener(move |this, _, _, cx| {
-                                    let text = this.form_json.read(cx).value().to_string();
-                                    match serde_json::from_str::<Value>(&text) {
-                                        Ok(answer) if answer.is_object() => {
+                                    match this.form_answer(&id_for_submit, &fields_for_submit, cx) {
+                                        Ok(answer) => {
                                             this.send_command(Command::ReplyForm {
-                                                session: session.clone(),
-                                                form: id.clone(),
+                                                session: session_for_submit.clone(),
+                                                form: id_for_submit.clone(),
                                                 answer,
-                                            })
+                                            });
                                         }
-                                        _ => this.data.error = Some(
-                                            "Enter form answers as a JSON object with field keys"
-                                                .into(),
-                                        ),
+                                        Err(message) => this.data.error = Some(message),
                                     }
                                     cx.notify();
                                 }))
-                                .child("Submit answers"),
+                                .child(if has_fields {
+                                    "Submit answers"
+                                } else {
+                                    "Continue"
+                                }),
                         ),
                     ),
             );
@@ -2689,7 +3175,7 @@ impl Zoc {
         view.into_any_element()
     }
 
-    fn render_composer(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_composer(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let composer_text = self.composer.read(cx).value().to_string();
         let can_send = !composer_text.trim().is_empty()
             && self
@@ -2742,7 +3228,7 @@ impl Zoc {
             .pb(px(16.))
             .pt(px(8.))
             .gap(px(8.))
-            .child(self.render_requests(cx))
+            .child(self.render_requests(window, cx))
             .when_some(picker, |view, picker| {
                 view.child(div().w_full().max_w(px(720.)).mx_auto().child(picker))
             })
@@ -3013,7 +3499,7 @@ impl Zoc {
             .into_any_element()
     }
 
-    fn render_central(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_central(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         if self.show_home {
             return v_flex()
                 .flex_1()
@@ -3203,7 +3689,7 @@ impl Zoc {
                             .child(transcript),
                     ),
                 )
-                .child(self.render_composer(cx));
+                .child(self.render_composer(window, cx));
         } else {
             panel = panel.child(
                 v_flex()
@@ -3435,7 +3921,7 @@ impl Render for Zoc {
                             .h_full()
                             .p(px(8.))
                             .gap(px(8.))
-                            .child(self.render_central(cx))
+                            .child(self.render_central(window, cx))
                             .when(self.show_preview, |view| {
                                 view.child(self.render_preview(cx))
                             }),

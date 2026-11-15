@@ -17,12 +17,13 @@ This checklist uses **implemented in code** separately from **verified running**
 | Agent/model/variant selection | Implemented | Pending |
 | Real prompt, streaming and continuation | Implemented | Pending |
 | Chronological transcript, user bubbles and Markdown/code | Implemented | Synthetic service only |
-| Tool rows with disclosure and file open | Implemented | Synthetic service only |
+| Tool rows with disclosure, file open and edit/write diff | Implemented | Synthetic service only |
 | Composer send/stop, model/agent/variant panel | Implemented | Synthetic service only |
 | Tool calls & reasoning | Implemented | Pending |
 | Permission requests and responses | Implemented | Pending |
 | Permission dock | Implemented | Synthetic service only |
-| Forms | Partial: JSON answer editor | Pending |
+| Question forms | Implemented: string/option/boolean/multiselect | Synthetic service only |
+| Conditional/custom form fields | Partial | Pending |
 | Markdown / selection / code | Native TextView | Pending |
 | File preview | Partial: UTF-8 text and Markdown | Pending |
 | Git working tree changes | Partial | Pending |

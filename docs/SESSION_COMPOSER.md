@@ -19,9 +19,10 @@ Reference: `anomalyco/opencode` at commit
   paragraphs use the Inter body scale. Reasoning is muted behind the existing
   Thinking toggle.
 - Tool parts are compact 28px rows with a tool icon, label, subtitle/file,
-  status and disclosure chevron. Clicking the row expands the raw detail in a
-  layer-01 surface; clicking a file subtitle opens the existing preview and does
-  not toggle the row.
+  status and disclosure chevron. Clicking the row expands a layer-01 body;
+  clicking a file subtitle opens the existing preview and does not toggle the
+  row. `edit` tools show removed/added lines as a red/green two-block diff;
+  `write` shows added content; other tools show raw output text.
 - Composer uses a 10px layer-01 card with 13px/20px editor text. The submit
   control is the official light 28px square, shows the stop glyph while a run is
   active, and is disabled at 40% when the prompt is empty or pending.
@@ -30,8 +31,9 @@ Reference: `anomalyco/opencode` at commit
   others.
 - Permission requests use a neutral raised layer-01 dock with a warning icon,
   monospace resource patterns and the official action order: Reject, Always
-  allow, Allow once. Form requests use the same surface and retain the JSON
-  fallback editor.
+  allow, Allow once. Form requests use the same surface with native string,
+  option, boolean and multiselect controls, required-field checks and typed
+  answers; the JSON answer editor is gone.
 - Session metadata no longer clears the selected model/agent when a session row
   omits those fields.
 
@@ -40,9 +42,9 @@ Reference: `anomalyco/opencode` at commit
 - Podman Fedora 45: `cargo fmt --all --check`, `cargo clippy --all-targets --
   -D warnings`, 15 unit tests, `cargo build --release`, `zoc --check`.
 - Xvfb + openbox with a disposable mock OpenCode transcript: inspected user and
-  assistant turns, reasoning reveal, Markdown headings/lists/code, tool row
-  expansion, file preview open, permission dock, model picker and composer
-  states.
+  assistant turns, reasoning reveal, Markdown headings/lists/code, compact tool
+  rows, expanded red/green diff, file preview open, permission dock, native
+  question fields, model picker and composer states.
 - This did not use the real OpenCode service and did not exercise streaming
   deltas, long transcripts, attachments, images or real syntax coverage.
 
@@ -50,10 +52,12 @@ Reference: `anomalyco/opencode` at commit
 
 - No composer attachments, image paste or file/image preview inside the
   transcript.
-- Tool output is raw text; structured diff/edit/write renderers and syntax-
-  highlighted diffs are not implemented.
-- Question/elicitation forms still use the JSON answer editor instead of the
-  official field controls.
+- Tool output is a simple two-block diff for edit/write; syntax-highlighted
+  line numbers, context lines and dedicated read/grep/task renderers are not
+  implemented.
+- Question forms support string, option, boolean and multiselect fields, but
+  not conditional `when` rules, custom option text, external controls or
+  server-side validation display.
 - Model/agent pickers have no search, provider icons or grouping, and no keyboard
   navigation.
 - No token/cost/duration footer under responses or per-message action menus.
