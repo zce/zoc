@@ -17,7 +17,7 @@ This checklist uses **implemented in code** separately from **verified running**
 | Agent/model/variant selection | Implemented | Pending |
 | Real prompt, streaming and continuation | Implemented | Pending |
 | Chronological transcript, user bubbles and Markdown/code | Implemented | Synthetic service only |
-| Tool rows with disclosure, file open and edit/write diff | Implemented | Synthetic service only |
+| Tool rows with disclosure, file open and line-numbered edit/write diff | Implemented | Synthetic service only |
 | Composer send/stop, model/agent/variant panel | Implemented | Synthetic service only |
 | Tool calls & reasoning | Implemented | Pending |
 | Permission requests and responses | Implemented | Pending |

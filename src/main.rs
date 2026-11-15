@@ -71,6 +71,100 @@ struct ToolPart {
     content: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DiffKind {
+    Context,
+    Removed,
+    Added,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DiffLine {
+    old: Option<usize>,
+    new: Option<usize>,
+    kind: DiffKind,
+    text: String,
+}
+
+fn diff_lines(old: &str, new: &str, context: usize) -> (Vec<DiffLine>, usize, usize) {
+    let old_lines: Vec<&str> = if old.is_empty() {
+        Vec::new()
+    } else {
+        old.split('\n').collect()
+    };
+    let new_lines: Vec<&str> = if new.is_empty() {
+        Vec::new()
+    } else {
+        new.split('\n').collect()
+    };
+    let mut prefix = 0;
+    while prefix < old_lines.len()
+        && prefix < new_lines.len()
+        && old_lines[prefix] == new_lines[prefix]
+    {
+        prefix += 1;
+    }
+    let mut suffix = 0;
+    while suffix < old_lines.len().saturating_sub(prefix)
+        && suffix < new_lines.len().saturating_sub(prefix)
+        && old_lines[old_lines.len() - 1 - suffix] == new_lines[new_lines.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+
+    let mut rows = Vec::new();
+    let context_start = prefix.saturating_sub(context);
+    for (index, line) in old_lines
+        .iter()
+        .enumerate()
+        .take(prefix)
+        .skip(context_start)
+    {
+        rows.push(DiffLine {
+            old: Some(index + 1),
+            new: Some(index + 1),
+            kind: DiffKind::Context,
+            text: (*line).to_owned(),
+        });
+    }
+    let mut removed = 0;
+    for (offset, line) in old_lines[prefix..old_lines.len().saturating_sub(suffix)]
+        .iter()
+        .enumerate()
+    {
+        rows.push(DiffLine {
+            old: Some(prefix + offset + 1),
+            new: None,
+            kind: DiffKind::Removed,
+            text: (*line).to_owned(),
+        });
+        removed += 1;
+    }
+    let mut added = 0;
+    for (offset, line) in new_lines[prefix..new_lines.len().saturating_sub(suffix)]
+        .iter()
+        .enumerate()
+    {
+        rows.push(DiffLine {
+            old: None,
+            new: Some(prefix + offset + 1),
+            kind: DiffKind::Added,
+            text: (*line).to_owned(),
+        });
+        added += 1;
+    }
+    let suffix_start = new_lines.len().saturating_sub(suffix);
+    for index in suffix_start..(suffix_start + context).min(new_lines.len()) {
+        rows.push(DiffLine {
+            old: Some(old_lines.len().saturating_sub(new_lines.len()) + index + 1),
+            new: Some(index + 1),
+            kind: DiffKind::Context,
+            text: new_lines[index].to_owned(),
+        });
+    }
+    (rows, added, removed)
+}
+
 #[derive(Clone)]
 struct MessageRow {
     id: String,
@@ -211,6 +305,8 @@ pub struct Zoc {
     rename: Entity<InputState>,
     search: Entity<InputState>,
     picker_search: Entity<InputState>,
+    picker_index: usize,
+    picker_query: String,
     form_inputs: RefCell<HashMap<String, Entity<InputState>>>,
     form_values: RefCell<HashMap<String, Value>>,
     preview_view: Entity<TextViewState>,
@@ -272,7 +368,15 @@ impl Zoc {
         let scroller = cx.new(|cx| MessageScrollerState::new(0, cx));
         cx.observe(&scroller, |_, _, cx| cx.notify()).detach();
         cx.observe(&composer, |_, _, cx| cx.notify()).detach();
-        cx.observe(&picker_search, |_, _, cx| cx.notify()).detach();
+        cx.observe(&picker_search, |this, input, cx| {
+            let query = input.read(cx).value().to_string();
+            if query != this.picker_query {
+                this.picker_query = query;
+                this.picker_index = 0;
+            }
+            cx.notify();
+        })
+        .detach();
         let inbox_focus = cx.focus_handle();
         let inbox_scroll = ScrollHandle::new();
         let inbox_focus_subscription = cx.on_focus(&inbox_focus, window, |this, _, cx| {
@@ -341,6 +445,8 @@ impl Zoc {
             rename,
             search,
             picker_search,
+            picker_index: 0,
+            picker_query: String::new(),
             form_inputs: RefCell::new(HashMap::new()),
             form_values: RefCell::new(HashMap::new()),
             preview_view,
@@ -2387,19 +2493,6 @@ impl Zoc {
                         .rounded(px(6.))
                         .cursor_pointer()
                         .hover(|style| style.bg(t::layer_01()))
-                        .child(
-                            div()
-                                .id(format!("tool-toggle-{id}-{index}-surface"))
-                                .absolute()
-                                .top(px(0.))
-                                .left(px(0.))
-                                .size_full()
-                                .cursor_pointer()
-                                .on_click({
-                                    let toggle = toggle.clone();
-                                    move |_, _, cx| toggle(cx)
-                                }),
-                        )
                         .child(div().id(format!("tool-toggle-{id}-{index}-icon")).child(
                             if running {
                                 gpui_kit::component::spinner::Spinner::new()
@@ -2437,24 +2530,7 @@ impl Zoc {
                             .line_height(px(18.))
                             .text_color(t::text_muted())
                             .child(subtitle);
-                        if let Some(file) = file.clone() {
-                            let owner = owner.clone();
-                            row_view = row_view.child(
-                                subtitle_view
-                                    .id(format!("tool-file-{id}-{index}"))
-                                    .cursor_pointer()
-                                    .hover(|style| style.text_color(t::text_base()))
-                                    .on_click(move |_, _, cx| {
-                                        cx.stop_propagation();
-                                        owner.update(cx, |this, cx| {
-                                            this.open_file(file.clone());
-                                            cx.notify();
-                                        });
-                                    }),
-                            );
-                        } else {
-                            row_view = row_view.child(subtitle_view);
-                        }
+                        row_view = row_view.child(subtitle_view);
                         row_view = row_view.child(div().flex_1());
                     } else {
                         row_view = row_view.child(div().flex_1());
@@ -2481,6 +2557,46 @@ impl Zoc {
                                         icon.rotate(gpui_kit::radians(-std::f32::consts::FRAC_PI_2))
                                     }),
                             )
+                        })
+                        .child(
+                            div()
+                                .id(format!("tool-toggle-{id}-{index}-surface"))
+                                .absolute()
+                                .top(px(0.))
+                                .left(px(0.))
+                                .size_full()
+                                .cursor_pointer()
+                                .on_click({
+                                    let toggle = toggle.clone();
+                                    move |_, _, cx| toggle(cx)
+                                }),
+                        )
+                        .when_some(file.clone(), |row, file| {
+                            let owner = owner.clone();
+                            row.child(
+                                div()
+                                    .id(format!("tool-file-{id}-{index}"))
+                                    .size(px(20.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded(px(4.))
+                                    .cursor_pointer()
+                                    .hover(|style| style.bg(t::layer_02()))
+                                    .on_click(move |_, _, cx| {
+                                        cx.stop_propagation();
+                                        owner.update(cx, |this, cx| {
+                                            this.open_file(file.clone());
+                                            cx.notify();
+                                        });
+                                    })
+                                    .child(
+                                        Icon::default()
+                                            .data(t::ICON_FILE.as_bytes())
+                                            .size(px(14.))
+                                            .text_color(t::icon_muted()),
+                                    ),
+                            )
                         });
 
                     let has_body =
@@ -2499,32 +2615,99 @@ impl Zoc {
                             .font_family(cx.theme().mono_font_family.clone())
                             .text_size(px(12.))
                             .line_height(px(18.));
-                        if old.is_some() || new.is_some() {
-                            for (marker, text, color) in [
-                                ("-", old.as_deref(), t::danger()),
-                                ("+", new.as_deref(), rgb(0x49c970).into()),
-                            ] {
-                                let Some(text) = text else { continue };
-                                for line in text.lines().take(200) {
-                                    body = body.child(
-                                        div()
-                                            .w_full()
-                                            .px(px(4.))
-                                            .whitespace_nowrap()
-                                            .text_color(color)
-                                            .child(format!("{marker}{line}")),
-                                    );
-                                }
-                            }
-                        } else if let Some(content) = content.as_deref() {
-                            for line in content.lines().take(200) {
+                        let diff = if old.is_some() || new.is_some() {
+                            Some(diff_lines(
+                                old.as_deref().unwrap_or(""),
+                                new.as_deref().unwrap_or(""),
+                                3,
+                            ))
+                        } else {
+                            content.as_deref().map(|content| diff_lines("", content, 3))
+                        };
+                        if let Some((rows, added, removed)) = diff {
+                            body = body.child(
+                                h_flex()
+                                    .w_full()
+                                    .gap(px(8.))
+                                    .px(px(4.))
+                                    .pb(px(4.))
+                                    .text_size(px(12.))
+                                    .text_color(t::text_faint())
+                                    .child(file.clone().unwrap_or_default())
+                                    .child(div().flex_1())
+                                    .when(added > 0, |row| {
+                                        row.child(
+                                            div()
+                                                .text_color(rgb(0x49c970))
+                                                .child(format!("+{added}")),
+                                        )
+                                    })
+                                    .when(removed > 0, |row| {
+                                        row.child(
+                                            div()
+                                                .text_color(t::danger())
+                                                .child(format!("-{removed}")),
+                                        )
+                                    }),
+                            );
+                            for line in rows.into_iter().take(240) {
+                                let (old_no, new_no) = (line.old, line.new);
+                                let (marker, color) = match line.kind {
+                                    DiffKind::Context => (" ", t::text_muted()),
+                                    DiffKind::Removed => ("-", t::danger()),
+                                    DiffKind::Added => ("+", rgb(0x49c970).into()),
+                                };
                                 body = body.child(
-                                    div()
+                                    h_flex()
                                         .w_full()
+                                        .h(px(18.))
+                                        .gap(px(6.))
                                         .px(px(4.))
-                                        .whitespace_nowrap()
-                                        .text_color(rgb(0x49c970))
-                                        .child(format!("+{line}")),
+                                        .when(line.kind == DiffKind::Removed, |row| {
+                                            row.bg(t::danger().opacity(0.07))
+                                        })
+                                        .when(line.kind == DiffKind::Added, |row| {
+                                            row.bg(rgb(0x49c970).opacity(0.07))
+                                        })
+                                        .child(
+                                            div()
+                                                .w(px(28.))
+                                                .flex_shrink_0()
+                                                .text_right()
+                                                .text_color(t::text_faint())
+                                                .child(
+                                                    old_no
+                                                        .map(|number| number.to_string())
+                                                        .unwrap_or_default(),
+                                                ),
+                                        )
+                                        .child(
+                                            div()
+                                                .w(px(28.))
+                                                .flex_shrink_0()
+                                                .text_right()
+                                                .text_color(t::text_faint())
+                                                .child(
+                                                    new_no
+                                                        .map(|number| number.to_string())
+                                                        .unwrap_or_default(),
+                                                ),
+                                        )
+                                        .child(
+                                            div()
+                                                .w(px(10.))
+                                                .flex_shrink_0()
+                                                .text_color(color)
+                                                .child(marker),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .whitespace_nowrap()
+                                                .text_color(color)
+                                                .child(line.text),
+                                        ),
                                 );
                             }
                         } else {
@@ -3070,6 +3253,156 @@ impl Zoc {
         view.into_any_element()
     }
 
+    fn filtered_models(&self, cx: &App) -> Vec<api::Model> {
+        let query = self.picker_search.read(cx).value().to_lowercase();
+        let mut models: Vec<api::Model> = self
+            .data
+            .models
+            .iter()
+            .filter(|model| {
+                query.is_empty()
+                    || model.name.to_lowercase().contains(&query)
+                    || model.provider_id.0.to_lowercase().contains(&query)
+                    || model.model_id.to_lowercase().contains(&query)
+            })
+            .take(75)
+            .cloned()
+            .collect();
+        models.sort_by(|a, b| {
+            a.provider_id
+                .0
+                .cmp(&b.provider_id.0)
+                .then_with(|| a.name.cmp(&b.name))
+        });
+        models
+    }
+
+    fn filtered_agents(&self, cx: &App) -> Vec<api::Agent> {
+        let query = self.picker_search.read(cx).value().to_lowercase();
+        let mut agents: Vec<api::Agent> = self
+            .data
+            .agents
+            .iter()
+            .filter(|agent| {
+                query.is_empty()
+                    || agent.name.to_lowercase().contains(&query)
+                    || agent.id.0.to_lowercase().contains(&query)
+            })
+            .cloned()
+            .collect();
+        agents.sort_by(|a, b| {
+            a.mode
+                .as_str()
+                .cmp(b.mode.as_str())
+                .then_with(|| a.name.cmp(&b.name))
+        });
+        agents
+    }
+
+    fn filtered_variants(&self, cx: &App) -> Vec<String> {
+        let Some(selected) = self.data.selected_model.as_ref() else {
+            return Vec::new();
+        };
+        let Some(model) = self.data.models.iter().find(|model| {
+            model.model_id == selected.id && model.provider_id == selected.provider_id
+        }) else {
+            return Vec::new();
+        };
+        let query = self.picker_search.read(cx).value().to_lowercase();
+        model
+            .variants
+            .iter()
+            .filter(|variant| query.is_empty() || variant.id.to_lowercase().contains(&query))
+            .map(|variant| variant.id.clone())
+            .collect()
+    }
+
+    fn picker_len(&self, cx: &App) -> usize {
+        if self.show_models {
+            self.filtered_models(cx).len()
+        } else if self.show_agents {
+            self.filtered_agents(cx).len()
+        } else if self.show_variants {
+            self.filtered_variants(cx).len()
+        } else {
+            0
+        }
+    }
+
+    fn confirm_picker(&mut self, cx: &mut Context<Self>) {
+        let index = self.picker_index;
+        if self.show_models {
+            if let Some(model) = self.filtered_models(cx).get(index).cloned() {
+                self.select_model(
+                    ModelRef {
+                        provider_id: model.provider_id.clone(),
+                        id: model.model_id.clone(),
+                        variant: None,
+                    },
+                    cx,
+                );
+            }
+        } else if self.show_agents {
+            if let Some(agent) = self.filtered_agents(cx).get(index) {
+                self.data.selected_agent = Some(agent.id.0.clone());
+                self.show_agents = false;
+                cx.notify();
+            }
+        } else if self.show_variants {
+            let variants = self.filtered_variants(cx);
+            if let (Some(variant), Some(selected)) =
+                (variants.get(index), self.data.selected_model.clone())
+            {
+                let mut next = selected;
+                next.variant = Some(variant.clone());
+                self.select_model(next, cx);
+            }
+        }
+    }
+
+    fn close_pickers(&mut self, cx: &mut Context<Self>) {
+        self.show_models = false;
+        self.show_agents = false;
+        self.show_variants = false;
+        self.picker_index = 0;
+        cx.notify();
+    }
+
+    fn on_picker_key(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if !(self.show_models || self.show_agents || self.show_variants) {
+            return;
+        }
+        let length = self.picker_len(cx);
+        match event.keystroke.key.as_str() {
+            "down" => {
+                if length > 0 {
+                    self.picker_index = (self.picker_index + 1).min(length - 1);
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            }
+            "up" => {
+                if length > 0 {
+                    self.picker_index = self
+                        .picker_index
+                        .saturating_sub(1)
+                        .min(length.saturating_sub(1));
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            }
+            "enter" => {
+                self.confirm_picker(cx);
+                cx.stop_propagation();
+            }
+            "escape" => {
+                self.close_pickers(cx);
+                cx.stop_propagation();
+            }
+            _ => {}
+        }
+    }
+
     fn render_model_picker(&self, cx: &mut Context<Self>) -> AnyElement {
         let current = self.data.selected_model.clone();
         let mut view = v_flex()
@@ -3100,14 +3433,51 @@ impl Zoc {
                             .small(),
                     ),
             );
-        let query = self.picker_search.read(cx).value().to_lowercase();
-        let models = self.data.models.iter().filter(|model| {
-            query.is_empty()
-                || model.name.to_lowercase().contains(&query)
-                || model.provider_id.0.to_lowercase().contains(&query)
-                || model.model_id.to_lowercase().contains(&query)
-        });
-        for model in models.take(75) {
+        let models = self.filtered_models(cx);
+        if models.is_empty() {
+            view = view.child(
+                div()
+                    .px(px(8.))
+                    .py(px(10.))
+                    .text_size(px(13.))
+                    .text_color(t::text_faint())
+                    .child("No matching models"),
+            );
+        }
+        let mut last_provider = String::new();
+        for (index, model) in models.iter().enumerate() {
+            if last_provider != model.provider_id.0 {
+                last_provider = model.provider_id.0.clone();
+                let tone = t::provider_tone(&model.provider_id.0);
+                view = view.child(
+                    h_flex()
+                        .h(px(24.))
+                        .w_full()
+                        .gap(px(8.))
+                        .px(px(8.))
+                        .child(
+                            div()
+                                .size(px(14.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded(px(4.))
+                                .bg(rgb(tone.background))
+                                .border_1()
+                                .border_color(rgb(tone.border))
+                                .text_size(px(9.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(rgb(0xffffff))
+                                .child(t::initial(&model.provider_id.0)),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .text_color(t::text_faint())
+                                .child(model.provider_id.0.clone()),
+                        ),
+                );
+            }
             let model_ref = ModelRef {
                 provider_id: model.provider_id.clone(),
                 id: model.model_id.clone(),
@@ -3116,7 +3486,7 @@ impl Zoc {
             let selected = current.as_ref().is_some_and(|selected| {
                 selected.provider_id == model_ref.provider_id && selected.id == model_ref.id
             });
-            let label = format!("{} · {}", model.provider_id, model.name);
+            let highlighted = self.picker_index == index;
             view = view.child(
                 h_flex()
                     .id(format!("model-{}", model_display(&model_ref)))
@@ -3127,11 +3497,18 @@ impl Zoc {
                     .rounded(px(6.))
                     .cursor_pointer()
                     .text_size(px(13.))
+                    .when(highlighted, |row| row.bg(t::layer_02()))
                     .hover(|style| style.bg(t::layer_02()))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.select_model(model_ref.clone(), cx);
                     }))
-                    .child(div().flex_1().min_w_0().truncate().child(label))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child(model.name.clone()),
+                    )
                     .when(selected, |row| {
                         row.child(
                             Icon::default()
@@ -3175,14 +3552,42 @@ impl Zoc {
                             .small(),
                     ),
             );
-        let query = self.picker_search.read(cx).value().to_lowercase();
-        for agent in self.data.agents.iter().filter(|agent| {
-            query.is_empty()
-                || agent.name.to_lowercase().contains(&query)
-                || agent.id.0.to_lowercase().contains(&query)
-        }) {
+        let agents = self.filtered_agents(cx);
+        if agents.is_empty() {
+            view = view.child(
+                div()
+                    .px(px(8.))
+                    .py(px(10.))
+                    .text_size(px(13.))
+                    .text_color(t::text_faint())
+                    .child("No matching agents"),
+            );
+        }
+        let mut last_mode = String::new();
+        for (index, agent) in agents.iter().enumerate() {
+            let mode = match agent.mode.as_str() {
+                "primary" => "Primary",
+                "subagent" => "Subagent",
+                "all" => "All",
+                other => other,
+            };
+            if last_mode != mode {
+                last_mode = mode.to_owned();
+                view = view.child(
+                    div()
+                        .h(px(24.))
+                        .w_full()
+                        .px(px(8.))
+                        .flex()
+                        .items_center()
+                        .text_size(px(12.))
+                        .text_color(t::text_faint())
+                        .child(mode.to_owned()),
+                );
+            }
             let id = agent.id.0.clone();
             let selected = current.as_deref() == Some(id.as_str());
+            let highlighted = self.picker_index == index;
             view = view.child(
                 h_flex()
                     .id(format!("agent-{id}"))
@@ -3193,6 +3598,7 @@ impl Zoc {
                     .rounded(px(6.))
                     .cursor_pointer()
                     .text_size(px(13.))
+                    .when(highlighted, |row| row.bg(t::layer_02()))
                     .hover(|style| style.bg(t::layer_02()))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.data.selected_agent = Some(id.clone());
@@ -3221,14 +3627,6 @@ impl Zoc {
 
     fn render_variant_picker(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(model) = self.data.selected_model.as_ref() else {
-            return div().into_any_element();
-        };
-        let Some(model_info) = self
-            .data
-            .models
-            .iter()
-            .find(|m| m.model_id == model.id && m.provider_id == model.provider_id)
-        else {
             return div().into_any_element();
         };
         let base = model.clone();
@@ -3261,16 +3659,22 @@ impl Zoc {
                             .small(),
                     ),
             );
-        let query = self.picker_search.read(cx).value().to_lowercase();
-        for variant in model_info
-            .variants
-            .iter()
-            .filter(|variant| query.is_empty() || variant.id.to_lowercase().contains(&query))
-        {
-            let id = variant.id.clone();
+        let variants = self.filtered_variants(cx);
+        if variants.is_empty() {
+            view = view.child(
+                div()
+                    .px(px(8.))
+                    .py(px(10.))
+                    .text_size(px(13.))
+                    .text_color(t::text_faint())
+                    .child("No matching variants"),
+            );
+        }
+        for (index, id) in variants.iter().enumerate() {
             let mut next = base.clone();
             next.variant = Some(id.clone());
             let selected = current.as_deref() == Some(id.as_str());
+            let highlighted = self.picker_index == index;
             view = view.child(
                 h_flex()
                     .id(format!("variant-{id}"))
@@ -3281,6 +3685,7 @@ impl Zoc {
                     .rounded(px(6.))
                     .cursor_pointer()
                     .text_size(px(13.))
+                    .when(highlighted, |row| row.bg(t::layer_02()))
                     .hover(|style| style.bg(t::layer_02()))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.select_model(next.clone(), cx);
@@ -3387,6 +3792,7 @@ impl Zoc {
                                     .label(self.data.selected_agent.as_deref().unwrap_or("Agent"))
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.show_agents = !this.show_agents;
+                                        this.picker_index = 0;
                                         this.show_models = false;
                                         this.show_variants = false;
                                         this.picker_search.update(cx, |state, cx| {
@@ -3403,6 +3809,7 @@ impl Zoc {
                                     .label(model_label)
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.show_models = !this.show_models;
+                                        this.picker_index = 0;
                                         this.show_agents = false;
                                         this.show_variants = false;
                                         this.picker_search.update(cx, |state, cx| {
@@ -3420,6 +3827,7 @@ impl Zoc {
                                         .label("Variant")
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             this.show_variants = !this.show_variants;
+                                            this.picker_index = 0;
                                             this.picker_search.update(cx, |state, cx| {
                                                 state.set_value("", window, cx);
                                                 state.focus(window, cx);
@@ -3995,6 +4403,7 @@ impl Render for Zoc {
             .on_action(cx.listener(|this, _: &UnarchiveMenuSession, _, cx| {
                 this.archive_menu_session(false, cx)
             }))
+            .capture_key_down(cx.listener(Self::on_picker_key))
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
                 if !this.resizing_sidebar {
                     return;
@@ -4141,7 +4550,7 @@ fn main() {
 
 #[cfg(test)]
 mod ui_tests {
-    use crate::{form_values_match, tool_label};
+    use crate::{DiffKind, diff_lines, form_values_match, tool_label};
     use serde_json::json;
 
     #[test]
@@ -4152,6 +4561,21 @@ mod ui_tests {
         assert!(form_values_match(&json!(42), &json!(42.0)));
         assert!(form_values_match(&json!(true), &json!(true)));
         assert!(!form_values_match(&json!("true"), &json!(true)));
+    }
+
+    #[test]
+    fn edit_diff_keeps_context_and_line_numbers() {
+        let (rows, added, removed) = diff_lines("a\nb\nc", "a\nB\nc", 3);
+        assert_eq!((added, removed), (1, 1));
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[0].kind, DiffKind::Context);
+        assert_eq!((rows[0].old, rows[0].new), (Some(1), Some(1)));
+        assert_eq!(rows[1].kind, DiffKind::Removed);
+        assert_eq!((rows[1].old, rows[1].new), (Some(2), None));
+        assert_eq!(rows[2].kind, DiffKind::Added);
+        assert_eq!((rows[2].old, rows[2].new), (None, Some(2)));
+        assert_eq!(rows[3].kind, DiffKind::Context);
+        assert_eq!((rows[3].old, rows[3].new), (Some(3), Some(3)));
     }
 
     #[test]

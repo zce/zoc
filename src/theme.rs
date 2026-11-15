@@ -143,6 +143,35 @@ pub fn project_tone(project: Option<&Project>) -> ProjectTone {
     }
 }
 
+pub fn provider_tone(name: &str) -> ProjectTone {
+    match name.to_ascii_lowercase().as_str() {
+        "anthropic" => ProjectTone {
+            background: 0x723d22,
+            border: 0xff8648,
+        },
+        "openai" => ProjectTone {
+            background: 0x196130,
+            border: 0x49c970,
+        },
+        "google" | "google-vertex" => ProjectTone {
+            background: 0x263fa9,
+            border: 0x7698fd,
+        },
+        "openrouter" => ProjectTone {
+            background: 0x361f83,
+            border: 0x7152f4,
+        },
+        "github-copilot" | "github" => ProjectTone {
+            background: 0x2e2e2e,
+            border: 0xaeaeae,
+        },
+        _ => ProjectTone {
+            background: 0x5c5c5c,
+            border: 0xaeaeae,
+        },
+    }
+}
+
 pub fn project_name(project: Option<&Project>, directory: &str) -> String {
     if let Some(name) = project.and_then(|project| project.name.as_deref())
         && !name.trim().is_empty()

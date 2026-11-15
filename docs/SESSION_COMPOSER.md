@@ -21,15 +21,18 @@ Reference: `anomalyco/opencode` at commit
 - Tool parts are compact 28px rows with a tool icon, label, subtitle/file,
   status and disclosure chevron. Clicking the row expands a layer-01 body;
   clicking a file subtitle opens the existing preview and does not toggle the
-  row. `edit` tools show removed/added lines as a red/green two-block diff;
-  `write` shows added content; other tools show raw output text.
+  row. `edit` tools show a red/green diff with old/new line-number gutters,
+  three lines of context and added/removed counts; `write` shows added content;
+  other tools show raw output text.
 - Composer uses a 10px layer-01 card with 13px/20px editor text. The submit
   control is the official light 28px square, shows the stop glyph while a run is
   active, and is disabled at 40% when the prompt is empty or pending.
 - Model, agent and variant pickers are compact 320px panels above the composer
-  with selected check marks, a shared search field, bounded scrolling and
-  filtering by model/provider/agent/variant name. Opening one picker closes the
-  others and focuses search.
+  with selected check marks, a shared search field, bounded scrolling,
+  provider/model/agent/variant filtering and keyboard Up/Down/Enter/Escape
+  navigation. Models are grouped by provider with a letter tile; agents are
+  grouped by Primary/Subagent mode. Opening one picker closes the others and
+  focuses search.
 - Permission requests use a neutral raised layer-01 dock with a warning icon,
   monospace resource patterns and the official action order: Reject, Always
   allow, Allow once. Form requests use the same surface with native string,
@@ -44,12 +47,13 @@ Reference: `anomalyco/opencode` at commit
 
 - Podman Fedora 45: `cargo fmt --all --check`, `cargo clippy --all-targets --
   -D warnings`, 15 unit tests, `cargo build --release`, `zoc --check`.
-- Podman Fedora 45: 17 unit tests.
+- Podman Fedora 45: 18 unit tests.
 - Xvfb + openbox with a disposable mock OpenCode transcript: inspected user and
   assistant turns, reasoning reveal, Markdown headings/lists/code, compact tool
-  rows, expanded red/green diff, file preview open, permission dock, native
-  question fields (including a conditional field and custom option input),
-  filtered model picker and composer states. An SSE `session.text.delta` appended text into the
+  rows, expanded red/green diff with line numbers, file preview open, permission
+  dock, native question fields (including a conditional field and custom option
+  input), provider-grouped model picker, agent mode grouping, keyboard
+  Up/Down/Enter selection and composer states. An SSE `session.text.delta` appended text into the
   open assistant row in place and the timeline stayed at its tail.
 - This did not use the real OpenCode service and did not exercise streaming
   deltas, long transcripts, attachments, images or real syntax coverage.
