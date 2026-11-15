@@ -309,6 +309,12 @@ fn section_label(label: &'static str) -> AnyElement {
         .into_any_element()
 }
 
+#[derive(Clone, Copy)]
+enum InboxScrollTarget {
+    Section(usize),
+    Working(usize),
+}
+
 pub struct Zoc {
     data: AppState,
     commands: Sender<Command>,
@@ -342,6 +348,7 @@ pub struct Zoc {
     inbox_focus: FocusHandle,
     inbox_cursor: Option<String>,
     inbox_scroll: ScrollHandle,
+    working_scroll: ScrollHandle,
     confirm_delete: Option<(String, String)>,
     menu_target: Rc<RefCell<Option<String>>>,
     expanded_tools: HashSet<String>,
@@ -393,6 +400,7 @@ impl Zoc {
         .detach();
         let inbox_focus = cx.focus_handle();
         let inbox_scroll = ScrollHandle::new();
+        let working_scroll = ScrollHandle::new();
         let inbox_focus_subscription = cx.on_focus(&inbox_focus, window, |this, _, cx| {
             if this.inbox_cursor.is_none() {
                 this.inbox_cursor = this
@@ -484,6 +492,7 @@ impl Zoc {
             inbox_focus,
             inbox_cursor: None,
             inbox_scroll,
+            working_scroll,
             confirm_delete: None,
             menu_target: Rc::new(RefCell::new(None)),
             expanded_tools: HashSet::new(),
@@ -641,7 +650,7 @@ impl Zoc {
         )
     }
 
-    fn inbox_targets(&self) -> Vec<(String, usize)> {
+    fn inbox_targets(&self) -> Vec<(String, InboxScrollTarget)> {
         let mut targets = Vec::new();
 
         if self.data.archived {
@@ -661,7 +670,11 @@ impl Zoc {
                 .cloned()
                 .collect();
             archived.sort_by(|a, b| b.time.updated.total_cmp(&a.time.updated));
-            targets.extend(archived.into_iter().map(|session| (session.id.0, 1)));
+            targets.extend(
+                archived
+                    .into_iter()
+                    .map(|session| (session.id.0, InboxScrollTarget::Section(1))),
+            );
             return targets;
         }
 
@@ -669,11 +682,15 @@ impl Zoc {
         let current = self.inbox_current_extra(&groups);
         let mut section = 0;
         if let Some(session) = current {
-            targets.push((session.id.0, section));
+            targets.push((session.id.0, InboxScrollTarget::Section(section)));
             section += 1;
         }
         for (_, sessions) in groups {
-            targets.extend(sessions.into_iter().map(|session| (session.id.0, section)));
+            targets.extend(
+                sessions
+                    .into_iter()
+                    .map(|session| (session.id.0, InboxScrollTarget::Section(section))),
+            );
             section += 1;
         }
 
@@ -682,7 +699,8 @@ impl Zoc {
                 self.data
                     .sorted_inbox(InboxGroup::Working, &self.filter)
                     .into_iter()
-                    .map(|session| (session.id.0, usize::MAX)),
+                    .enumerate()
+                    .map(|(index, session)| (session.id.0, InboxScrollTarget::Working(index))),
             );
         }
 
@@ -791,10 +809,21 @@ impl Zoc {
         };
 
         let Some(index) = next else { return };
-        let (id, section) = targets[index].clone();
+        let (id, target) = targets[index].clone();
         self.inbox_cursor = Some(id);
-        if section != usize::MAX {
-            self.inbox_scroll.scroll_to_item(section);
+        match target {
+            InboxScrollTarget::Section(section) => self.inbox_scroll.scroll_to_item(section),
+            InboxScrollTarget::Working(index) => {
+                let count = self
+                    .data
+                    .sorted_inbox(InboxGroup::Working, &self.filter)
+                    .len();
+                if index + 1 >= count {
+                    self.working_scroll.scroll_to_bottom();
+                } else {
+                    self.working_scroll.scroll_to_item(index);
+                }
+            }
         }
         cx.notify();
         cx.stop_propagation();
@@ -2117,11 +2146,19 @@ impl Zoc {
                                 .child("Working"),
                         )
                         .when(working_expanded, |view| {
-                            view.child(div().min_h_0().overflow_y_scrollbar().child(
-                                v_flex().gap(px(2.)).children(working.iter().map(|session| {
-                                    self.render_inbox_card(session, false, now, cx)
-                                })),
-                            ))
+                            view.child(
+                                v_flex()
+                                    .id("inbox-working-list")
+                                    .flex_1()
+                                    .min_h_0()
+                                    .gap(px(2.))
+                                    .track_scroll(&self.working_scroll)
+                                    .overflow_y_scroll()
+                                    .vertical_scrollbar(&self.working_scroll)
+                                    .children(working.iter().map(|session| {
+                                        self.render_inbox_card(session, false, now, cx)
+                                    })),
+                            )
                         }),
                 )
             })

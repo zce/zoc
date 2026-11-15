@@ -7,14 +7,13 @@ use opencode_api::{
 };
 use opencode_local::{channel::Channels, paths::Paths, registration::Files};
 use opencode_store::{
-    Data as StoreData, Options as StoreOptions, connection as store_connection,
+    Catalog, Data as StoreData, Location, Options as StoreOptions, connection as store_connection,
     inbox::Prompt as StorePrompt, messages::LoadMore,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use smol::channel::Sender as UiSender;
 use std::{
-    collections::HashMap,
     future::Future,
     net::IpAddr,
     sync::{
@@ -371,7 +370,6 @@ struct ServiceClient {
     client: Client,
     info: ServerInfo,
     store: Arc<StoreConnection>,
-    branches: Arc<Mutex<HashMap<String, Option<String>>>>,
 }
 
 impl ServiceClient {
@@ -437,7 +435,6 @@ impl ServiceClient {
             client,
             info,
             store,
-            branches: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -544,38 +541,6 @@ impl ServiceClient {
             }))
             .await?;
         Ok(!response.data.is_empty())
-    }
-
-    async fn branches(&self, directories: Vec<String>) -> Vec<(String, Option<String>)> {
-        let mut entries = Vec::new();
-        for directory in directories {
-            let cached = self
-                .branches
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .get(&directory)
-                .cloned();
-            match cached {
-                Some(branch) => entries.push((directory, branch)),
-                None => {
-                    let branch = self
-                        .call(self.client.vcs_get(&VcsGetInput {
-                            location: Some(LocationQueryInput {
-                                directory: Some(directory.clone()),
-                            }),
-                        }))
-                        .await
-                        .ok()
-                        .and_then(|output| output.data.branch.current);
-                    self.branches
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner())
-                        .insert(directory.clone(), branch.clone());
-                    entries.push((directory, branch));
-                }
-            }
-        }
-        entries
     }
 
     async fn delete(&self, session: &str) -> anyhow::Result<()> {
@@ -882,11 +847,12 @@ async fn run_command(
             emit(events, Event::Changes { items, diffs });
         }
         Command::LoadBranches { directories } => {
-            let service = service.clone();
-            let events = events.clone();
+            let data = service.store.data.clone();
             tokio::spawn(async move {
-                let entries = service.branches(directories).await;
-                emit(&events, Event::Branches { entries });
+                for directory in directories {
+                    let location = Location::new(directory);
+                    let _ = data.catalog_sync(Catalog::Vcs, Some(&location)).await;
+                }
             });
         }
         Command::Delete { session } => {
@@ -1034,6 +1000,20 @@ fn spawn_store_watch(
                             state.projects().into_iter().cloned().collect()
                         });
                         emit(&events, Event::Projects { projects });
+                    }
+
+                    if !changes.locations.is_empty() {
+                        let entries: Vec<(String, Option<String>)> = store.data.read(|state| {
+                            state
+                                .locations()
+                                .filter_map(|(location, data)| {
+                                    data.vcs.as_ref().map(|vcs| {
+                                        (location.directory.clone(), vcs.branch.current.clone())
+                                    })
+                                })
+                                .collect()
+                        });
+                        emit(&events, Event::Branches { entries });
                     }
 
                     if changes.sessions()
