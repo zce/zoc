@@ -775,14 +775,32 @@ async fn run_command(
     Ok(())
 }
 
+/// Store snapshots are not ordered by the server clock; the timeline is.
+fn sort_transcript(messages: &mut [Value]) {
+    messages.sort_by(|a, b| {
+        let created = |value: &Value| {
+            value
+                .pointer("/time/created")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0)
+        };
+        created(a).total_cmp(&created(b)).then_with(|| {
+            a.get("id")
+                .and_then(Value::as_str)
+                .cmp(&b.get("id").and_then(Value::as_str))
+        })
+    });
+}
+
 fn conversation_snapshot(data: &StoreData, session: &str) -> (Vec<Value>, Vec<Value>, Vec<Value>) {
     let id = SessionID(session.to_owned());
     data.read(|state| {
-        let messages = state
+        let mut messages: Vec<Value> = state
             .messages(&id)
             .iter()
             .map(|message| serde_json::to_value(message).unwrap_or(Value::Null))
             .collect();
+        sort_transcript(&mut messages);
         let permissions = state
             .permissions(&id)
             .unwrap_or_default()
@@ -1158,6 +1176,23 @@ mod tests {
         let message: SessionMessageInfo = serde_json::from_value(raw.clone()).unwrap();
         assert!(matches!(message, SessionMessageInfo::Unknown(_)));
         assert_eq!(serde_json::to_value(message).unwrap(), raw);
+    }
+
+    #[test]
+    fn transcript_order_is_chronological() {
+        let mut messages = vec![
+            json!({"id": "msg_2", "time": {"created": 20}}),
+            json!({"id": "msg_1", "time": {"created": 10}}),
+            json!({"id": "msg_3", "time": {"created": 20}}),
+        ];
+        sort_transcript(&mut messages);
+        assert_eq!(
+            messages
+                .iter()
+                .map(|message| message["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["msg_1", "msg_2", "msg_3"]
+        );
     }
 
     #[test]

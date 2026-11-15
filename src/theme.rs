@@ -210,6 +210,14 @@ pub const ICON_STOP: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16
 
 pub const ICON_ARCHIVE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2.5 5.5V13.5H13.5V5.5M2.5 5.5H1.5V2.5H14.5V5.5H13.5M2.5 5.5H13.5M6.5 7.5H9.5" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/></svg>"#;
 
+pub const ICON_CHECK: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3.53613 8.17857L6.39328 11.75L12.4647 4.25" stroke="currentColor"/></svg>"#;
+
+pub const ICON_CHEVRON_DOWN: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M5 6.5L8 9.5L11 6.5" stroke="currentColor"/></svg>"#;
+
+pub const ICON_WARNING: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 2L14.5 13.5H1.5L8 2Z" stroke="currentColor"/><path d="M8 6V9.5" stroke="currentColor" stroke-linecap="round"/><path d="M8 11.5V11.6" stroke="currentColor" stroke-linecap="round"/></svg>"#;
+
+pub const ICON_TERMINAL: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M1.5 2.5H14.5V13.5H1.5V2.5Z" stroke="currentColor" stroke-linejoin="round"/><path d="M3.5 5L5.5 7L3.5 9M7 9H10" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/></svg>"#;
+
 pub const ICON_EYE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M1.5 8C2.5 6.5 4.5 4 8 4C11.5 4 13.5 6.5 14.5 8C13.5 9.5 11.5 12 8 12C4.5 12 2.5 9.5 1.5 8Z" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/><path d="M9.5 8C9.5 8.82843 8.82843 9.5 8 9.5C7.17157 9.5 6.5 8.82843 6.5 8C6.5 7.17157 7.17157 6.5 8 6.5C8.82843 6.5 9.5 7.17157 9.5 8Z" fill="currentColor"/></svg>"#;
 
 pub const ICON_FILE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3.5 1.5H9.5L12.5 4.5V14.5H3.5V1.5Z" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/><path d="M9.5 1.5V4.5H12.5M5.5 8H10.5M5.5 11H10.5" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/></svg>"#;

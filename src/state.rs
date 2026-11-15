@@ -344,8 +344,12 @@ impl AppState {
             if let Some(idle) = idle {
                 self.prefs.read.insert(session.clone(), idle);
             }
-            self.selected_model = model;
-            self.selected_agent = agent;
+            if let Some(model) = model {
+                self.selected_model = Some(model);
+            }
+            if let Some(agent) = agent {
+                self.selected_agent = Some(agent);
+            }
         }
         self.preview = None;
         self.show_changes = false;

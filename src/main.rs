@@ -12,7 +12,7 @@ use gpui_kit::component::{
     menu::ContextMenuExt as _,
     message_scroller::{MessageScroller, MessageScrollerState},
     scroll::ScrollableElement as _,
-    text::{TextView, TextViewState},
+    text::{TextView, TextViewState, TextViewStyle},
     v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -22,7 +22,12 @@ use state::{
     AppState, InboxGroup, InboxStatus, SIDEBAR_DEFAULT_WIDTH, clamp_sidebar_width, session_since,
 };
 use std::{
-    borrow::Cow, cell::RefCell, collections::HashMap, rc::Rc, sync::mpsc::Sender, time::Duration,
+    borrow::Cow,
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+    rc::Rc,
+    sync::mpsc::Sender,
+    time::Duration,
 };
 use theme as t;
 
@@ -64,6 +69,51 @@ struct MessageRow {
     role: String,
     parts: Vec<Part>,
     error: Option<String>,
+}
+
+fn tool_label(name: &str) -> String {
+    match name {
+        "bash" | "shell" => "Shell".into(),
+        "read" => "Read".into(),
+        "edit" => "Edit".into(),
+        "write" => "Write".into(),
+        "glob" => "Glob".into(),
+        "grep" => "Grep".into(),
+        "task" => "Task".into(),
+        "webfetch" => "Web fetch".into(),
+        "todowrite" | "todoread" => "Tasks".into(),
+        other => {
+            let mut chars = other.chars();
+            chars
+                .next()
+                .map(|first| first.to_uppercase().collect::<String>() + chars.as_str())
+                .unwrap_or_else(|| "Tool".into())
+        }
+    }
+}
+
+fn tool_icon(name: &str) -> &'static str {
+    match name {
+        "read" | "write" => t::ICON_FILE,
+        "edit" | "patch" => t::ICON_DIFF,
+        "glob" | "grep" => t::ICON_SEARCH,
+        _ => t::ICON_TERMINAL,
+    }
+}
+
+fn markdown_style() -> TextViewStyle {
+    let mut style = TextViewStyle::default()
+        .paragraph_gap(gpui_kit::rems(0.5))
+        .heading_font_size(|level, _| {
+            px(match level {
+                1 => 17.,
+                2 => 15.,
+                _ => 14.,
+            })
+        });
+    style.is_dark = true;
+    style.highlight_theme = gpui_kit::component::highlighter::HighlightTheme::default_dark();
+    style
 }
 
 fn section_label(label: &'static str) -> AnyElement {
@@ -111,6 +161,7 @@ pub struct Zoc {
     inbox_cursor: Option<String>,
     inbox_scroll: ScrollHandle,
     menu_target: Rc<RefCell<Option<String>>>,
+    expanded_tools: HashSet<String>,
     _subscriptions: Vec<Subscription>,
     _events_task: Task<()>,
     _clock_task: Task<()>,
@@ -151,6 +202,7 @@ impl Zoc {
         let preview_view = cx.new(|cx| TextViewState::markdown("", cx));
         let scroller = cx.new(|cx| MessageScrollerState::new(0, cx));
         cx.observe(&scroller, |_, _, cx| cx.notify()).detach();
+        cx.observe(&composer, |_, _, cx| cx.notify()).detach();
         let inbox_focus = cx.focus_handle();
         let inbox_scroll = ScrollHandle::new();
         let inbox_focus_subscription = cx.on_focus(&inbox_focus, window, |this, _, cx| {
@@ -240,6 +292,7 @@ impl Zoc {
             inbox_cursor: None,
             inbox_scroll,
             menu_target: Rc::new(RefCell::new(None)),
+            expanded_tools: HashSet::new(),
             _subscriptions: vec![subscription, inbox_focus_subscription],
             _events_task: task,
             _clock_task: clock,
@@ -571,8 +624,12 @@ impl Zoc {
                         .iter()
                         .find(|item| item.id.as_str() == id)
                 }) {
-                    self.data.selected_model = session.model.clone();
-                    self.data.selected_agent = session.agent.as_ref().map(|agent| agent.0.clone());
+                    if let Some(model) = session.model.clone() {
+                        self.data.selected_model = Some(model);
+                    }
+                    if let Some(agent) = session.agent.as_ref() {
+                        self.data.selected_agent = Some(agent.0.clone());
+                    }
                 }
                 if self.show_home {
                     cx.notify();
@@ -1144,6 +1201,7 @@ impl Zoc {
     fn open_selected(&mut self, id: String, cx: &mut Context<Self>) {
         self.show_home = false;
         self.show_connection = false;
+        self.expanded_tools.clear();
         self.data.select_session(id.clone());
         self.rebuild_rows(cx);
         self.send_command(Command::LoadConversation {
@@ -2004,10 +2062,10 @@ impl Zoc {
         row: MessageRow,
         owner: Entity<Zoc>,
         reasoning_visible: bool,
-        _cx: &mut App,
+        cx: &mut App,
     ) -> AnyElement {
         let user = row.role == "user";
-        let mut body = v_flex().w_full().min_w_0().gap(px(8.));
+        let mut body = v_flex().min_w_0().gap(px(12.));
         for (index, part) in row.parts.into_iter().enumerate() {
             let view: AnyElement = match part {
                 Part::Text { state, reasoning } => {
@@ -2017,17 +2075,22 @@ impl Zoc {
                     v_flex()
                         .w_full()
                         .min_w_0()
-                        .gap(px(4.))
+                        .gap(px(6.))
                         .when(reasoning, |view| {
                             view.child(
                                 div()
-                                    .text_size(px(12.))
-                                    .line_height(px(16.))
-                                    .text_color(t::text_faint())
+                                    .text_size(px(13.))
+                                    .line_height(px(18.))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(t::text_muted())
                                     .child("Thinking"),
                             )
                         })
-                        .child(TextView::new(&state).selectable(true))
+                        .child(
+                            TextView::new(&state)
+                                .style(markdown_style())
+                                .selectable(true),
+                        )
                         .into_any_element()
                 }
                 Part::Tool {
@@ -2037,61 +2100,140 @@ impl Zoc {
                     detail,
                     file,
                 } => {
-                    let mut card = v_flex()
+                    let expanded = owner.read(cx).expanded_tools.contains(&id);
+                    let running = matches!(status.as_str(), "running" | "streaming" | "pending");
+                    let label = tool_label(&name);
+                    let subtitle = file.clone().or_else(|| {
+                        detail
+                            .lines()
+                            .next()
+                            .map(str::trim)
+                            .filter(|line| !line.is_empty())
+                            .map(|line| line.chars().take(160).collect())
+                    });
+                    let show_status =
+                        !running && !matches!(status.as_str(), "completed" | "success" | "");
+                    let toggle_id = id.clone();
+                    let owner_toggle = owner.clone();
+                    let mut row_view = h_flex()
+                        .id(format!("tool-{id}-{index}"))
+                        .h(px(28.))
                         .w_full()
-                        .gap(px(6.))
-                        .rounded(px(8.))
-                        .border_1()
-                        .border_color(t::border_muted())
-                        .bg(t::layer_01())
-                        .p(px(10.))
-                        .child(
-                            h_flex()
-                                .gap(px(8.))
-                                .child(
-                                    div()
-                                        .text_size(px(12.))
-                                        .line_height(px(16.))
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .child(name),
+                        .gap(px(8.))
+                        .px(px(4.))
+                        .rounded(px(6.))
+                        .cursor_pointer()
+                        .hover(|style| style.bg(t::layer_01()))
+                        .on_click(move |_, _, cx| {
+                            owner_toggle.update(cx, |this, cx| {
+                                if !this.expanded_tools.remove(&toggle_id) {
+                                    this.expanded_tools.insert(toggle_id.clone());
+                                }
+                                cx.notify();
+                            });
+                        })
+                        .child(if running {
+                            gpui_kit::component::spinner::Spinner::new()
+                                .xsmall()
+                                .icon(
+                                    Icon::default()
+                                        .data(t::ICON_ACTIVITY_RING.as_bytes())
+                                        .size(px(14.)),
                                 )
-                                .child(
-                                    div()
-                                        .text_size(px(12.))
-                                        .line_height(px(16.))
-                                        .text_color(t::text_faint())
-                                        .child(status),
-                                ),
-                        );
-                    if let Some(file) = file {
-                        let owner = owner.clone();
-                        card = card.child(
-                            Button::new(format!("file-{id}-{index}"))
-                                .small()
-                                .ghost()
-                                .label(file.clone())
-                                .on_click(move |_, _, cx| {
-                                    owner.update(cx, |this, cx| {
-                                        this.open_file(file.clone());
-                                        cx.notify();
-                                    });
-                                }),
-                        );
-                    }
-                    if !detail.is_empty() {
-                        card = card.child(
+                                .color(t::icon_muted())
+                                .into_any_element()
+                        } else {
+                            Icon::default()
+                                .data(tool_icon(&name).as_bytes())
+                                .size(px(16.))
+                                .text_color(t::icon_muted())
+                                .into_any_element()
+                        })
+                        .child(
                             div()
+                                .flex_shrink_0()
+                                .text_size(px(13.))
+                                .line_height(px(18.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(label),
+                        );
+
+                    if let Some(subtitle) = subtitle {
+                        let subtitle_view = div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(13.))
+                            .line_height(px(18.))
+                            .text_color(t::text_muted())
+                            .child(subtitle);
+                        if let Some(file) = file.clone() {
+                            let owner = owner.clone();
+                            row_view = row_view.child(
+                                subtitle_view
+                                    .id(format!("tool-file-{id}-{index}"))
+                                    .cursor_pointer()
+                                    .hover(|style| style.text_color(t::text_base()))
+                                    .on_click(move |_, _, cx| {
+                                        cx.stop_propagation();
+                                        owner.update(cx, |this, cx| {
+                                            this.open_file(file.clone());
+                                            cx.notify();
+                                        });
+                                    }),
+                            );
+                        } else {
+                            row_view = row_view.child(subtitle_view);
+                        }
+                    } else {
+                        row_view = row_view.child(div().flex_1());
+                    }
+
+                    row_view = row_view
+                        .when(show_status, |row| {
+                            row.child(
+                                div()
+                                    .flex_shrink_0()
+                                    .text_size(px(12.))
+                                    .line_height(px(18.))
+                                    .text_color(t::text_faint())
+                                    .child(status),
+                            )
+                        })
+                        .when(!detail.is_empty(), |row| {
+                            row.child(
+                                Icon::default()
+                                    .data(t::ICON_CHEVRON_DOWN.as_bytes())
+                                    .size(px(14.))
+                                    .text_color(t::text_faint())
+                                    .when(!expanded, |icon| {
+                                        icon.rotate(gpui_kit::radians(-std::f32::consts::FRAC_PI_2))
+                                    }),
+                            )
+                        });
+
+                    let mut tool = v_flex().w_full().min_w_0().gap(px(4.)).child(row_view);
+                    if expanded && !detail.is_empty() {
+                        tool = tool.child(
+                            div()
+                                .w_full()
+                                .rounded(px(8.))
+                                .border_1()
+                                .border_color(t::border_muted())
+                                .bg(t::layer_01())
+                                .p(px(10.))
+                                .font_family(cx.theme().mono_font_family.clone())
                                 .text_size(px(12.))
-                                .line_height(px(16.))
-                                .text_color(t::text_faint())
+                                .line_height(px(18.))
+                                .text_color(t::text_muted())
                                 .child(detail),
                         );
                     }
-                    card.into_any_element()
+                    tool.into_any_element()
                 }
                 Part::Other(label) => div()
                     .text_size(px(12.))
-                    .line_height(px(16.))
+                    .line_height(px(18.))
                     .text_color(t::text_faint())
                     .child(label)
                     .into_any_element(),
@@ -2120,19 +2262,20 @@ impl Zoc {
                         .px(px(12.))
                         .py(px(8.))
                         .text_size(px(14.))
-                        .line_height(px(20.))
+                        .line_height(px(22.))
                         .child(body),
                 )
                 .into_any_element()
         } else {
-            body.into_any_element()
+            body.w_full().into_any_element()
         };
 
         v_flex()
             .id(format!("message-{}", row.id))
-            .px(px(16.))
-            .py(px(8.))
-            .gap(px(8.))
+            .px(px(24.))
+            .pt(px(8.))
+            .pb(px(8.))
+            .gap(px(12.))
             .w_full()
             .min_w_0()
             .child(content)
@@ -2155,16 +2298,21 @@ impl Zoc {
             view = view.child(
                 v_flex()
                     .w_full()
-                    .gap(px(8.))
+                    .gap(px(10.))
                     .border_1()
-                    .border_color(t::warning().opacity(0.35))
-                    .rounded(px(10.))
-                    .bg(t::warning().opacity(0.06))
+                    .border_color(t::border_muted())
+                    .rounded(px(12.))
+                    .bg(t::layer_01())
                     .p(px(12.))
                     .child(
                         h_flex()
                             .gap(px(8.))
-                            .child(div().size(px(6.)).rounded(px(3.)).bg(t::warning()))
+                            .child(
+                                Icon::default()
+                                    .data(t::ICON_WARNING.as_bytes())
+                                    .size(px(16.))
+                                    .text_color(t::warning()),
+                            )
                             .child(
                                 div()
                                     .flex_1()
@@ -2182,27 +2330,61 @@ impl Zoc {
                     .when(!resources.is_empty(), |card| {
                         card.child(
                             div()
+                                .font_family(cx.theme().mono_font_family.clone())
                                 .text_size(px(12.))
-                                .line_height(px(16.))
-                                .text_color(t::text_muted())
-                                .child(resources.join(", ")),
+                                .line_height(px(18.))
+                                .text_color(t::text_base())
+                                .child(resources.join("\n")),
                         )
                     })
                     .child(
-                        h_flex().gap(px(6.)).children(
+                        h_flex().justify_end().gap(px(6.)).children(
                             [
-                                ("once", "Allow once"),
-                                ("always", "Always allow"),
-                                ("reject", "Reject"),
+                                ("reject", "Reject", 0),
+                                ("always", "Always allow", 1),
+                                ("once", "Allow once", 2),
                             ]
                             .into_iter()
-                            .map(|(decision, label)| {
+                            .map(|(decision, label, variant)| {
                                 let session = session.clone();
                                 let id = id.clone();
-                                Button::new(format!("permission-{id}-{decision}"))
+                                if variant == 2 {
+                                    let session = session.clone();
+                                    let id = id.clone();
+                                    return div()
+                                        .id(format!("permission-{id}-{decision}"))
+                                        .h(px(26.))
+                                        .px(px(8.))
+                                        .flex()
+                                        .items_center()
+                                        .rounded(px(6.))
+                                        .bg(rgb(0xdbdbdb))
+                                        .text_color(rgb(0x161616))
+                                        .text_size(px(13.))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .cursor_pointer()
+                                        .hover(|style| style.bg(rgb(0xf2f2f2)))
+                                        .role(Role::Button)
+                                        .aria_label(label)
+                                        .on_click(cx.listener(move |this, _, _, _| {
+                                            this.send_command(Command::ReplyPermission {
+                                                session: session.clone(),
+                                                request: id.clone(),
+                                                decision: decision.into(),
+                                            });
+                                        }))
+                                        .child(label)
+                                        .into_any_element();
+                                }
+                                let button = Button::new(format!("permission-{id}-{decision}"))
                                     .small()
-                                    .outline()
-                                    .label(label)
+                                    .label(label);
+                                let button = if variant == 0 {
+                                    button.ghost()
+                                } else {
+                                    button.outline()
+                                };
+                                button
                                     .on_click(cx.listener(move |this, _, _, _| {
                                         this.send_command(Command::ReplyPermission {
                                             session: session.clone(),
@@ -2210,6 +2392,7 @@ impl Zoc {
                                             decision: decision.into(),
                                         });
                                     }))
+                                    .into_any_element()
                             }),
                         ),
                     ),
@@ -2247,41 +2430,52 @@ impl Zoc {
                     }
                 }
             }
-            view =
-                view.child(
-                    v_flex()
-                        .w_full()
-                        .gap(px(8.))
-                        .border_1()
-                        .border_color(t::warning().opacity(0.35))
-                        .rounded(px(10.))
-                        .bg(t::warning().opacity(0.06))
-                        .p(px(12.))
-                        .child(
-                            h_flex()
-                                .gap(px(8.))
-                                .child(div().size(px(6.)).rounded(px(3.)).bg(t::warning()))
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .text_size(px(13.))
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .child(title),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(12.))
-                                        .text_color(t::text_faint())
-                                        .child("Question"),
-                                ),
-                        )
-                        .child(fields)
-                        .child(Textarea::new(&self.form_json))
-                        .child(
-                            Button::new(format!("form-{id}"))
-                                .small()
-                                .primary()
-                                .label("Submit answers")
+            view = view.child(
+                v_flex()
+                    .w_full()
+                    .gap(px(10.))
+                    .border_1()
+                    .border_color(t::border_muted())
+                    .rounded(px(12.))
+                    .bg(t::layer_01())
+                    .p(px(12.))
+                    .child(
+                        h_flex()
+                            .gap(px(8.))
+                            .child(div().size(px(6.)).rounded(px(3.)).bg(t::warning()))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_size(px(13.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(title),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(12.))
+                                    .text_color(t::text_faint())
+                                    .child("Question"),
+                            ),
+                    )
+                    .child(fields)
+                    .child(Textarea::new(&self.form_json))
+                    .child(
+                        h_flex().justify_end().child(
+                            div()
+                                .id(format!("form-{id}"))
+                                .h(px(26.))
+                                .px(px(8.))
+                                .flex()
+                                .items_center()
+                                .rounded(px(6.))
+                                .bg(rgb(0xdbdbdb))
+                                .text_color(rgb(0x161616))
+                                .text_size(px(13.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .cursor_pointer()
+                                .hover(|style| style.bg(rgb(0xf2f2f2)))
+                                .role(Role::Button)
+                                .aria_label("Submit answers")
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     let text = this.form_json.read(cx).value().to_string();
                                     match serde_json::from_str::<Value>(&text) {
@@ -2298,62 +2492,134 @@ impl Zoc {
                                         ),
                                     }
                                     cx.notify();
-                                })),
+                                }))
+                                .child("Submit answers"),
                         ),
-                );
+                    ),
+            );
         }
         view.into_any_element()
     }
 
     fn render_model_picker(&self, cx: &mut Context<Self>) -> AnyElement {
+        let current = self.data.selected_model.clone();
         let mut view = v_flex()
-            .gap_1()
-            .p_2()
+            .w(px(320.))
+            .max_h(px(240.))
+            .gap(px(1.))
+            .rounded(px(10.))
             .border_1()
-            .border_color(cx.theme().border)
-            .rounded_md()
-            .bg(cx.theme().popover);
+            .border_color(t::border_muted())
+            .bg(t::layer_01())
+            .p(px(4.))
+            .overflow_y_scrollbar()
+            .child(
+                div()
+                    .h(px(24.))
+                    .px(px(8.))
+                    .flex()
+                    .items_center()
+                    .text_size(px(12.))
+                    .text_color(t::text_faint())
+                    .child("Model"),
+            );
         for model in self.data.models.iter().take(75) {
             let model_ref = ModelRef {
                 provider_id: model.provider_id.clone(),
                 id: model.model_id.clone(),
                 variant: None,
             };
+            let selected = current.as_ref().is_some_and(|selected| {
+                selected.provider_id == model_ref.provider_id && selected.id == model_ref.id
+            });
             let label = format!("{} · {}", model.provider_id, model.name);
             view = view.child(
-                Button::new(format!("model-{}", model_display(&model_ref)))
-                    .ghost()
-                    .small()
-                    .label(label)
+                h_flex()
+                    .id(format!("model-{}", model_display(&model_ref)))
+                    .h(px(28.))
+                    .w_full()
+                    .gap(px(8.))
+                    .px(px(8.))
+                    .rounded(px(6.))
+                    .cursor_pointer()
+                    .text_size(px(13.))
+                    .hover(|style| style.bg(t::layer_02()))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.select_model(model_ref.clone(), cx);
-                    })),
+                    }))
+                    .child(div().flex_1().min_w_0().truncate().child(label))
+                    .when(selected, |row| {
+                        row.child(
+                            Icon::default()
+                                .data(t::ICON_CHECK.as_bytes())
+                                .size(px(16.))
+                                .text_color(t::accent()),
+                        )
+                    }),
             );
         }
         view.into_any_element()
     }
 
     fn render_agent_picker(&self, cx: &mut Context<Self>) -> AnyElement {
-        v_flex()
-            .gap_1()
-            .p_2()
+        let current = self.data.selected_agent.clone();
+        let mut view = v_flex()
+            .w(px(320.))
+            .max_h(px(240.))
+            .gap(px(1.))
+            .rounded(px(10.))
             .border_1()
-            .border_color(cx.theme().border)
-            .rounded_md()
-            .bg(cx.theme().popover)
-            .children(self.data.agents.iter().map(|agent| {
-                let id = agent.id.0.clone();
-                Button::new(format!("agent-{id}"))
-                    .small()
-                    .ghost()
-                    .label(agent.name.clone())
+            .border_color(t::border_muted())
+            .bg(t::layer_01())
+            .p(px(4.))
+            .overflow_y_scrollbar()
+            .child(
+                div()
+                    .h(px(24.))
+                    .px(px(8.))
+                    .flex()
+                    .items_center()
+                    .text_size(px(12.))
+                    .text_color(t::text_faint())
+                    .child("Agent"),
+            );
+        for agent in &self.data.agents {
+            let id = agent.id.0.clone();
+            let selected = current.as_deref() == Some(id.as_str());
+            view = view.child(
+                h_flex()
+                    .id(format!("agent-{id}"))
+                    .h(px(28.))
+                    .w_full()
+                    .gap(px(8.))
+                    .px(px(8.))
+                    .rounded(px(6.))
+                    .cursor_pointer()
+                    .text_size(px(13.))
+                    .hover(|style| style.bg(t::layer_02()))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.data.selected_agent = Some(id.clone());
                         this.show_agents = false;
                         cx.notify();
                     }))
-            }))
-            .into_any_element()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child(agent.name.clone()),
+                    )
+                    .when(selected, |row| {
+                        row.child(
+                            Icon::default()
+                                .data(t::ICON_CHECK.as_bytes())
+                                .size(px(16.))
+                                .text_color(t::accent()),
+                        )
+                    }),
+            );
+        }
+        view.into_any_element()
     }
 
     fn render_variant_picker(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -2369,26 +2635,68 @@ impl Zoc {
             return div().into_any_element();
         };
         let base = model.clone();
-        v_flex()
-            .gap_1()
+        let current = model.variant.clone();
+        let mut view = v_flex()
+            .w(px(320.))
+            .max_h(px(240.))
+            .gap(px(1.))
+            .rounded(px(10.))
             .border_1()
-            .border_color(cx.theme().border)
-            .p_2()
-            .children(model_info.variants.iter().map(|variant| {
-                let mut next = base.clone();
-                next.variant = Some(variant.id.clone());
-                Button::new(format!("variant-{}", variant.id))
-                    .small()
-                    .ghost()
-                    .label(variant.id.clone())
+            .border_color(t::border_muted())
+            .bg(t::layer_01())
+            .p(px(4.))
+            .overflow_y_scrollbar()
+            .child(
+                div()
+                    .h(px(24.))
+                    .px(px(8.))
+                    .flex()
+                    .items_center()
+                    .text_size(px(12.))
+                    .text_color(t::text_faint())
+                    .child("Variant"),
+            );
+        for variant in &model_info.variants {
+            let id = variant.id.clone();
+            let mut next = base.clone();
+            next.variant = Some(id.clone());
+            let selected = current.as_deref() == Some(id.as_str());
+            view = view.child(
+                h_flex()
+                    .id(format!("variant-{id}"))
+                    .h(px(28.))
+                    .w_full()
+                    .gap(px(8.))
+                    .px(px(8.))
+                    .rounded(px(6.))
+                    .cursor_pointer()
+                    .text_size(px(13.))
+                    .hover(|style| style.bg(t::layer_02()))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.select_model(next.clone(), cx);
                     }))
-            }))
-            .into_any_element()
+                    .child(div().flex_1().min_w_0().truncate().child(id.clone()))
+                    .when(selected, |row| {
+                        row.child(
+                            Icon::default()
+                                .data(t::ICON_CHECK.as_bytes())
+                                .size(px(16.))
+                                .text_color(t::accent()),
+                        )
+                    }),
+            );
+        }
+        view.into_any_element()
     }
 
     fn render_composer(&self, cx: &mut Context<Self>) -> AnyElement {
+        let composer_text = self.composer.read(cx).value().to_string();
+        let can_send = !composer_text.trim().is_empty()
+            && self
+                .data
+                .current_session
+                .as_ref()
+                .is_none_or(|session| !self.data.pending_send.contains(session));
         let model_label = self
             .data
             .selected_model
@@ -2419,6 +2727,15 @@ impl Zoc {
                 })
             })
             .is_some_and(|model| !model.variants.is_empty());
+        let picker = if self.show_models {
+            Some(self.render_model_picker(cx))
+        } else if self.show_agents {
+            Some(self.render_agent_picker(cx))
+        } else if self.show_variants {
+            Some(self.render_variant_picker(cx))
+        } else {
+            None
+        };
 
         v_flex()
             .px(px(16.))
@@ -2426,13 +2743,16 @@ impl Zoc {
             .pt(px(8.))
             .gap(px(8.))
             .child(self.render_requests(cx))
+            .when_some(picker, |view, picker| {
+                view.child(div().w_full().max_w(px(720.)).mx_auto().child(picker))
+            })
             .child(
                 v_flex()
                     .w_full()
                     .max_w(px(720.))
                     .mx_auto()
                     .gap(px(4.))
-                    .rounded(px(12.))
+                    .rounded(px(10.))
                     .bg(t::layer_01())
                     .border_1()
                     .border_color(t::border_muted())
@@ -2441,10 +2761,13 @@ impl Zoc {
                         Textarea::new(&self.composer)
                             .appearance(false)
                             .bordered(false)
+                            .text_size(px(13.))
+                            .line_height(px(20.))
                             .aria_label("OpenCode prompt"),
                     )
                     .child(
                         h_flex()
+                            .h(px(32.))
                             .gap(px(2.))
                             .items_center()
                             .child(
@@ -2455,6 +2778,7 @@ impl Zoc {
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.show_agents = !this.show_agents;
                                         this.show_models = false;
+                                        this.show_variants = false;
                                         cx.notify();
                                     })),
                             )
@@ -2466,6 +2790,7 @@ impl Zoc {
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.show_models = !this.show_models;
                                         this.show_agents = false;
+                                        this.show_variants = false;
                                         cx.notify();
                                     })),
                             )
@@ -2482,47 +2807,46 @@ impl Zoc {
                                 )
                             })
                             .child(div().flex_1())
-                            .when(working, |row| {
-                                row.child(
-                                    Button::new("stop")
-                                        .small()
-                                        .ghost()
-                                        .tooltip("Stop")
-                                        .icon(
-                                            Icon::default()
-                                                .data(t::ICON_STOP.as_bytes())
-                                                .size(px(12.)),
-                                        )
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.interrupt();
-                                            cx.notify();
-                                        })),
-                                )
-                            })
                             .child(
-                                Button::new("send")
-                                    .small()
-                                    .primary()
-                                    .icon(
+                                div()
+                                    .id("composer-submit")
+                                    .size(px(28.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded(px(6.))
+                                    .role(Role::Button)
+                                    .aria_label(if working { "Stop" } else { "Send" })
+                                    .cursor_pointer()
+                                    .when(working || can_send, |button| {
+                                        button
+                                            .bg(rgb(0xdbdbdb))
+                                            .text_color(rgb(0x161616))
+                                            .hover(|style| style.bg(rgb(0xf2f2f2)))
+                                    })
+                                    .when(!working && !can_send, |button| {
+                                        button.bg(t::border_base()).text_color(t::text_faint())
+                                    })
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        if working {
+                                            this.interrupt();
+                                        } else if can_send {
+                                            this.send_prompt(window, cx);
+                                        }
+                                        cx.notify();
+                                    }))
+                                    .child(
                                         Icon::default()
-                                            .data(t::ICON_ARROW_UP.as_bytes())
+                                            .data(if working {
+                                                t::ICON_STOP.as_bytes()
+                                            } else {
+                                                t::ICON_ARROW_UP.as_bytes()
+                                            })
                                             .size(px(14.)),
-                                    )
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.send_prompt(window, cx)
-                                    })),
+                                    ),
                             ),
                     ),
             )
-            .when(self.show_agents, |view| {
-                view.child(self.render_agent_picker(cx))
-            })
-            .when(self.show_models, |view| {
-                view.child(self.render_model_picker(cx))
-            })
-            .when(self.show_variants, |view| {
-                view.child(self.render_variant_picker(cx))
-            })
             .into_any_element()
     }
 
@@ -2795,7 +3119,7 @@ impl Zoc {
                                         .flex_1()
                                         .min_w_0()
                                         .truncate()
-                                        .text_size(px(14.))
+                                        .text_size(px(13.))
                                         .font_weight(FontWeight::MEDIUM)
                                         .child(title),
                                 ),
@@ -2874,7 +3198,7 @@ impl Zoc {
                     div().flex_1().min_h_0().w_full().child(
                         div()
                             .size_full()
-                            .max_w(px(760.))
+                            .max_w(px(744.))
                             .mx_auto()
                             .child(transcript),
                     ),
