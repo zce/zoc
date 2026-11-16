@@ -51,7 +51,7 @@ These figures are container/Xvfb with a local fixture and a warm page cache. The
 | App + WebKit peak RSS | 474,272 KiB (~463 MiB) |
 | RSS trend | decreased ~12 MiB over 10 minutes; no upward growth |
 | App process CPU over 619 s | 0.13 s (~0.02% of one core) |
-| App process RSS at probe (smoke) | 168,228–169,852 KiB |
+| App process RSS at probe (smoke, no native inbox) | 168,228–169,852 KiB |
 
 WebKitGTK renders and networks in separate processes; the app process alone understates the client footprint. The run was the official Web UI home with one fixture server and its SSE stream open, not an active agent session. DMA-BUF rendering was left at MyGo's default (disabled in this environment); it was not force-enabled.
 
