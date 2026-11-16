@@ -87,3 +87,13 @@ Report:
 - `docs/PERFORMANCE.md` updates if measurements were taken.
 
 Do not mark a check passed based on CI alone.
+
+## Partial environment verification (2026-11-16)
+
+The published `zoc-v0.1.1` artifact was launched on the real target desktop and connected to the locally running OpenCode Server. This is partial evidence, not a completed checklist:
+
+- **Environment:** Fedora Linux 45 Workstation, GNOME Shell 51.1, Wayland (`XDG_SESSION_TYPE=wayland`), GTK 3.24.52, WebKitGTK 2.54.2.
+- **Server:** real `opencode serve` on `127.0.0.1:4096`, version 2.3.0; authentication required and was supplied from the user's local service configuration into a temporary app HOME. The credential was never printed or committed; the temporary HOME was removed after the run.
+- **Passed:** app launch and native-window rendering; real-server authentication; project and session list loaded; a real session opened and rendered its existing transcript and composer; the running session showed working state and a Stop control; the MyGo Native UI **Servers & Inbox** rendered against the real desktop (see `docs/assets/native-inbox-fedora.png`); a real persistent PTY was created through the terminal command palette and the server reported a running `zsh` prompt in `~/Coding/zoc`.
+- **Not completed:** terminal keystroke injection into the WebKit terminal surface (the PTY existed, but automated input did not reach it); CJK composition (the test X11/IBus path inserted literal pinyin, not committed characters); permission/question prompts; real attachments; native dialogs and notifications; a new model prompt and live stream; a full 10–30 minute real-session stability run.
+- **Method:** AT-SPI for accessibility inspection and actions, XTest for pointer/keyboard injection under XWayland, and read-only/local OpenCode API calls for verification. No host packages, services, system settings or global configuration were changed.
