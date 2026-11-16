@@ -15,7 +15,7 @@
 
 Any failure before step 8 publishes nothing. The previous release remains installable.
 
-Manual dispatch has a `publish` boolean. Set it to `false` for a full dry run that builds and gates but does not tag or publish.
+Manual dispatch has a `publish` boolean. Set it to `false` for a full dry run that builds and gates but does not tag or publish. Set `force` to `true` only for a deliberate ZOC patch release that must ship while the upstream SHA is unchanged; otherwise an unchanged upstream exits successfully without a release.
 
 ## Build pinning
 

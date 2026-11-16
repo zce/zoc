@@ -70,7 +70,7 @@ PY
 (
   cd "${OUT}"
   rm -f SHA256SUMS
-  find . -maxdepth 1 -type f ! -name SHA256SUMS ! -name upstream.json ! -name .mygo-files -printf '%P\n' | sort | while read -r f; do
+  find . -maxdepth 1 -type f ! -name SHA256SUMS ! -name upstream.json ! -name .mygo-files ! -name zoc -printf '%P\n' | sort | while read -r f; do
     sha256sum "$f"
   done > SHA256SUMS
   sha256sum upstream.json >> SHA256SUMS

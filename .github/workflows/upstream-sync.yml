@@ -12,6 +12,10 @@ on:
         description: "Publish a release after all gates pass"
         type: boolean
         default: true
+      force:
+        description: "Publish a ZOC patch even when the upstream SHA is unchanged"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -59,6 +63,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           UPSTREAM_SHA: ${{ steps.upstream.outputs.sha }}
+          FORCE: ${{ github.event.inputs.force }}
         run: |
           gh release list --limit 100 --json tagName,isDraft,isPrerelease \
             --jq '.[] | select(.isDraft == false and .isPrerelease == false) | .tagName' \
@@ -82,7 +87,7 @@ jobs:
           echo "previous_sha=${previous_sha}" >> "$GITHUB_OUTPUT"
           echo "latest_tag=${latest}" >> "$GITHUB_OUTPUT"
           echo "Previous upstream: ${previous_sha:-none}; next ZOC version: ${version}"
-          if [[ "${previous_sha}" == "${UPSTREAM_SHA}" ]]; then
+          if [[ "${previous_sha}" == "${UPSTREAM_SHA}" && "${FORCE}" != "true" ]]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
