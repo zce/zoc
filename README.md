@@ -25,13 +25,13 @@ See [Feature parity](docs/FEATURE_PARITY.md) and [Manual acceptance](docs/ACCEPT
 
 ## Verification snapshot
 
-- Latest artifact: [`zoc-v0.1.1`](https://github.com/zce/zoc/releases/tag/zoc-v0.1.1) (published 2026-11-16). CI `43919001926` is green on `c07f05e`.
+- Latest artifact: [`zoc-v0.1.1`](https://github.com/zce/zoc/releases/tag/zoc-v0.1.1) (published 2026-11-16). CI `43925109520` is green on `f09b641`.
 - CI `43919001926` on `c07f05e`: passed format/vet/tests, adapter typecheck, frontend gates, Linux packaging, WebKitGTK + Native UI smoke, and artifact upload.
 - Upstream sync publish `43917676504`: built and published `zoc-v0.1.1` from `anomalyco/opencode` `dev` at `e4606463e7d18fd126ecfac3ec04602f1e44814b`.
 - Upstream unchanged run `43918630325`: detected the same SHA and exited successfully without building or releasing.
 - Release assets downloaded again and verifed with `sha256sum -c SHA256SUMS`; the released archive was installed with `install.sh` and passed the WebKitGTK + Native UI smoke.
 - The fixture smoke asserts the official UI mounts in WebKitGTK, `/api/info` and `/api/event` are reached, the Go-backed WebSocket opens and receives an `attached` frame, storage/clipboard bridge round trips, and the Native UI inbox renders a 980×680 window.
-- Real OpenCode Server and Fedora GNOME/Wayland checks remain manual; see [Manual acceptance](docs/ACCEPTANCE.md).
+- Partial real-desktop acceptance on Fedora 45 Workstation, GNOME 51.1, Wayland, against a real OpenCode Server 2.3.0: authentication, real project/session browsing, session opening, Native UI inbox rendering and a real persistent PTY creation passed. Terminal keystrokes, CJK composition, permissions/questions, attachments and native dialogs/notifications remain manual; see [Manual acceptance](docs/ACCEPTANCE.md).
 
 ## Runtime requirements
 
