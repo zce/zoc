@@ -105,7 +105,7 @@ Native UI state is a presentation projection: every snapshot is fetched on deman
 | Data | Location | Notes |
 |---|---|---|
 | Server profiles | `PathUserData/servers.json` | Name + URL only, mode 0600 |
-| Web UI settings, registry, drafts | `PathUserData/storage/*.json` | Reached through `Platform.storage` |
+| Web UI settings, registry, text drafts | `PathUserData/storage/*.json` | Reached through `Platform.storage`; draft image blobs are not yet persisted by a ZOC draft store |
 | Window bounds/state | MyGo `window-state.json` | `StateKey: main`, `StateKey: inbox` |
 | Credentials | Web UI memory / native window memory | Never written by ZOC |
 

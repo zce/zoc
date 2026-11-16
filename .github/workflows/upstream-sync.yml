@@ -41,7 +41,7 @@ jobs:
         id: upstream
         env:
           GH_TOKEN: ${{ github.token }}
-          INPUT_SHA: ${{ inputs.sha }}
+          INPUT_SHA: ${{ github.event.inputs.sha }}
         run: |
           sha="${INPUT_SHA}"
           if [[ -z "${sha}" ]]; then
@@ -111,6 +111,7 @@ jobs:
           ZOC_UPSTREAM_COMMIT: ${{ steps.upstream.outputs.sha }}
           ZOC_UPDATER_PUBLIC_KEY: ${{ vars.ZOC_UPDATER_PUBLIC_KEY }}
           MYGO_UPDATER_PRIVATE_KEY: ${{ secrets.MYGO_UPDATER_PRIVATE_KEY }}
+          GH_TOKEN: ${{ github.token }}
         run: ./scripts/container.sh ./scripts/build.sh
 
       - name: WebKitGTK + Native UI smoke
@@ -145,7 +146,7 @@ jobs:
           fi
 
       - name: Publish release
-        if: steps.previous.outputs.changed == 'true' && (inputs.publish == true || github.event_name == 'schedule')
+        if: steps.previous.outputs.changed == 'true' && (github.event.inputs.publish == 'true' || github.event_name == 'schedule')
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.previous.outputs.version }}
@@ -166,7 +167,7 @@ jobs:
           echo "Published ${tag}"
 
       - name: Dry-run summary
-        if: steps.previous.outputs.changed == 'true' && inputs.publish != true && github.event_name != 'schedule'
+        if: steps.previous.outputs.changed == 'true' && github.event.inputs.publish != 'true' && github.event_name != 'schedule'
         run: |
           echo "Gates passed; no release was published (publish=false)."
           cat build/linux-amd64/upstream.json

@@ -32,7 +32,8 @@ Status values:
 | External links/local paths | Native | MyGo Shell with scheme checks. |
 | Deep links | Native | `zoc://add`, `zoc://open`; single-instance lock. |
 | Window state/fullscreen/zoom | Native | MyGo `StateKey`, fullscreen events, `SetZoomFactor`. |
-| Persistent settings/drafts | Native | `Platform.storage` backed by `PathUserData/storage/*.json`; smoke verified storage round trip. |
+| Persistent settings/drafts | Native | `Platform.storage` backed by `PathUserData/storage/*.json`; smoke verified storage round trip. Text drafts persist. |
+| Draft image blobs across restart | Partial | The upstream `platform.draftStore` blob hook is not implemented; image attachment bytes are not guaranteed across a restart. |
 | Server profiles | Native | JSON, mode 0600, URL only; no secrets. |
 | Native Servers & Inbox | Native | Complete route with add/edit/remove/test/session navigation and Web UI fallback. |
 | Signed in-app updates | Conditional | MyGo updater wired for archive installs when keys are provisioned; not provisioned/claimed. |

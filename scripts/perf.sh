@@ -43,13 +43,21 @@ xvfb-run -a -s "-screen 0 1280x900x24" dbus-run-session -- env \
   "${BIN}" >"${OUT}/app.log" 2>&1 &
 WRAPPER_PID=$!
 
+APP_PID=""
 for _ in $(seq 1 100); do
-  [[ -s "${OUT}/smoke.json" ]] && break
+  for candidate in $(pgrep -x zoc || true); do
+    state="$(awk '/^State:/{print $2}' "/proc/${candidate}/status" 2>/dev/null || true)"
+    cmdline="$(tr '\0' ' ' < "/proc/${candidate}/cmdline" 2>/dev/null || true)"
+    if [[ "${state}" != "Z" && "${cmdline}" == *"${BIN}"* ]]; then
+      APP_PID="${candidate}"
+      break
+    fi
+  done
+  [[ -n "${APP_PID}" && -s "${OUT}/smoke.json" ]] && break
   sleep 0.2
 done
-APP_PID="$(pgrep -x zoc | head -n 1 || true)"
 if [[ -z "${APP_PID}" ]]; then
-  echo "error: app process not found" >&2
+  echo "error: live app process not found" >&2
   tail -50 "${OUT}/app.log" >&2
   exit 1
 fi
@@ -126,7 +134,7 @@ data = {
   "gtk3": cmd("rpm", "-q", "gtk3"),
   "mygoVersion": "0.9.2",
   "upstreamCommit": json.load(open(os.path.join(os.path.dirname(binary), "upstream.json")))["upstreamCommit"],
-  "notes": "Peak RSS includes WebKit web process only through the app process; WebKitGTK renders in a separate process. CPU is app-process CPU, sampled every 2s.",
+  "notes": "RSS sums the app and its direct child processes every 2s; WebKit may have deeper descendants. CPU is app-process CPU. WebKitGTK renders in separate processes.",
 }
 json.dump(data, open(os.path.join(out, "summary.json"), "w"), indent=2)
 open(os.path.join(out, "summary.json"), "a").write("\n")

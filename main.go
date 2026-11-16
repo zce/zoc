@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -62,10 +63,23 @@ func main() {
 
 	var pendingLinks []string
 	var pendingMu sync.Mutex
+	var linksReady atomic.Bool
+	drainLinks := func() {
+		pendingMu.Lock()
+		links := pendingLinks
+		pendingLinks = nil
+		pendingMu.Unlock()
+		for _, link := range links {
+			handleDeepLink(service, link)
+		}
+	}
 	mygo.App.OnOpenURL(func(raw string) {
 		pendingMu.Lock()
 		pendingLinks = append(pendingLinks, raw)
 		pendingMu.Unlock()
+		if linksReady.Load() {
+			drainLinks()
+		}
 	})
 
 	mygo.App.WhenReady(func() {
@@ -111,13 +125,8 @@ func main() {
 			installSmokeProbe(win, out, startedAt, inbox)
 		}
 
-		pendingMu.Lock()
-		links := append([]string(nil), pendingLinks...)
-		pendingLinks = nil
-		pendingMu.Unlock()
-		for _, link := range links {
-			handleDeepLink(service, link)
-		}
+		linksReady.Store(true)
+		drainLinks()
 	})
 
 	mygo.App.OnSecondInstance(func(args []string, workingDir string) {

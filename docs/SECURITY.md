@@ -12,7 +12,7 @@ ZOC is a client: the OpenCode Server is authoritative and the app only exposes t
 
 Native fetch and WebSocket transports are not general proxies.
 
-- Only origins derived from persisted server profiles are allowed.
+- Only origins derived from persisted server profiles are allowed. For a loopback profile, `localhost`, `127.0.0.1` and `::1` on the same scheme and port are the same origin.
 - `http`, `https`, `ws` and `wss` are supported; all other schemes are refused.
 - URLs with userinfo are rejected so credentials never appear in profile URLs or logs.
 - Redirects: at most five, target must be configured, origin must not change.

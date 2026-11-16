@@ -4,7 +4,7 @@ Run this on Fedora GNOME/Wayland with a real OpenCode Server. Record the app ver
 
 ## Install
 
-- [ ] Install the archive with `install.sh` or the RPM with `dnf`.
+- [ ] Install the archive with `sh install.sh zoc-<version>-linux-amd64.tar.gz` (both files in one directory), or the RPM with `dnf`.
 - [ ] Launch ZOC from GNOME. A window opens with the official OpenCode Web UI.
 - [ ] Confirm no Node.js, Bun, Electron, Chromium or OpenCode process is started by ZOC.
 

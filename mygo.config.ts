@@ -1,6 +1,7 @@
+import { readFileSync } from "node:fs"
 import { defineConfig } from "mygo-cli"
 
-const version = process.env.ZOC_VERSION ?? "0.1.0"
+const version = process.env.ZOC_VERSION ?? readFileSync("VERSION", "utf8").trim()
 const publicKey = process.env.ZOC_UPDATER_PUBLIC_KEY?.trim()
 
 export default defineConfig({

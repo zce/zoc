@@ -50,10 +50,16 @@ else
   echo
 fi
 
+if [[ -n "${PREVIOUS_TAG}" ]]; then
+  zoc_changes="$(git log --oneline --no-decorate "${PREVIOUS_TAG}..HEAD" | head -30)"
+else
+  zoc_changes="$(git log --oneline --no-decorate -20)"
+fi
+
 cat <<EOF
 ## ZOC changes
 
-$(git log --oneline --no-decorate "${PREVIOUS_TAG:+${PREVIOUS_TAG}..HEAD}" 2>/dev/null | head -30 || git log --oneline --no-decorate -20)
+${zoc_changes}
 
 ## Artifacts
 

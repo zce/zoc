@@ -144,7 +144,8 @@ function storageFor(name = "default"): AsyncStorage {
     clear: async () => {
       await load()
       cache.clear()
-      await Desktop.storageClear(name)
+      writes = writes.then(() => Desktop.storageClear(name))
+      await writes
     },
     key: async (index: number) => {
       await load()
@@ -297,6 +298,7 @@ export async function createZocPlatform(version: string): Promise<ZocRuntime> {
       const filters = pickerFilters(opts)
       const files = await Desktop.pickAttachmentFiles({
         title: opts.title,
+        defaultPath: opts.defaultPath,
         multiple: opts.multiple,
         extensions: filters.extensions,
         mimeTypes: filters.mimeTypes,

@@ -15,16 +15,17 @@ These are measured baselines, not targets. The first baseline is the official We
 | MyGo | 0.9.2 |
 | OpenCode | `e4606463e7d18fd126ecfac3ec04602f1e44814b` (`dev`) |
 | Scenario | Official Web UI home screen, one fixture server, SSE open, no real session |
-| Method | `scripts/container.sh ./scripts/perf.sh`; app process sampled every 2 s |
+| Method | `scripts/container.sh ./scripts/perf.sh`; process tree sampled every 2 s |
+| Raw 10-minute summary | `docs/performance-10min.json` |
 
 ## Package and installed footprint
 
 | Metric | Value |
 |---|---|
-| `zoc` executable | 110,457,095 bytes (~105.3 MiB) |
-| Embedded Web UI (`frontend/`) | 94,126,158 bytes (~89.8 MiB) |
-| RPM | 40,336,478 bytes (~38.5 MiB) |
-| Archive (`tar.gz`) | 40,330,541 bytes (~38.5 MiB) |
+| `zoc` executable | 110,461,191 bytes (~105.3 MiB) |
+| Embedded Web UI (`frontend/`) | 94,126,200 bytes (~89.8 MiB, including the gate manifest) |
+| RPM | 40,335,501 bytes (~38.5 MiB) |
+| Archive (`tar.gz`) | 40,329,515 bytes (~38.5 MiB) |
 | Installed payload | executable + icon + desktop entry; no Node/Chromium/Electron |
 
 The binary is large because the official Web UI, its lazy Office/WASM assets, fonts and terminal emulator are embedded. Compression reduces the distributed artifact to about 38.5 MiB.
@@ -33,26 +34,30 @@ The binary is large because the official Web UI, its lazy Office/WASM assets, fo
 
 | Metric | Value |
 |---|---|
-| Process start → `OnDidFinishLoad` | **237 ms** |
-| Process start → bridge/storage/clipboard probe complete | 4.26 s (includes a deliberate 4 s settle) |
+| Process start → `OnDidFinishLoad` | **237–340 ms** across runs (340 ms in the 619 s run) |
+| Process start → bridge/storage/clipboard probe complete | 4.26–4.36 s (includes a deliberate 4 s settle) |
 | First usable UI | Web UI mounted at `OnDidFinishLoad`; fixture health/SSE then connect asynchronously |
 
-The 237 ms figure is container/Xvfb with a local fixture and a warm page cache. It measures WebKit page load, not human-perceived readiness after a real server probe.
+These figures are container/Xvfb with a local fixture and a warm page cache. They measure WebKit page load, not human-perceived readiness after a real server probe.
 
 ## Idle memory and CPU
 
 | Metric | Value |
 |---|---|
-| App process RSS at probe | 168,708 KiB (~164.8 MiB) |
-| App process peak RSS | 171,124 KiB |
-| App + WebKit child processes RSS | ~469,272 KiB (~458 MiB) peak in the 138 s run |
-| App CPU over 138 s | 0.03 s (~0.02% of one core) |
+| Run duration | **619.3 s** (10-minute stability run) |
+| Samples | 304 (every 2 s) |
+| App + WebKit RSS start | 474,272 KiB (~463 MiB) |
+| App + WebKit RSS end | 462,308 KiB (~451 MiB) |
+| App + WebKit peak RSS | 474,272 KiB (~463 MiB) |
+| RSS trend | decreased ~12 MiB over 10 minutes; no upward growth |
+| App process CPU over 619 s | 0.13 s (~0.02% of one core) |
+| App process RSS at probe (smoke) | 168,228–169,852 KiB |
 
-WebKitGTK renders and networks in separate processes; the app process alone understates the client footprint. Both numbers are recorded. DMA-BUF rendering was left at MyGo's default (disabled in this environment); it was not force-enabled.
+WebKitGTK renders and networks in separate processes; the app process alone understates the client footprint. The run was the official Web UI home with one fixture server and its SSE stream open, not an active agent session. DMA-BUF rendering was left at MyGo's default (disabled in this environment); it was not force-enabled.
 
 ## What is not measured yet
 
-- A 10–30 minute real session with streaming, scrolling and tool output. (`scripts/perf.sh` supports `ZOC_PERF_SECONDS=1800`, but the recorded run is 138 s.)
+- A 10–30 minute **real session** with streaming, scrolling and tool output. The recorded run is a 10-minute stable idle home screen; `scripts/perf.sh` supports `ZOC_PERF_SECONDS=1800` for a longer run.
 - A real OpenCode Server and real terminal latency.
 - Long transcript scroll smoothness.
 - Terminal startup/input/output latency.

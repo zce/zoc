@@ -18,10 +18,10 @@ mkdir -p "${ROOT}/.cache/go-build" "${ROOT}/.cache/go-mod" "${ROOT}/.cache/bun"
 podman run --rm \
   --userns=keep-id \
   --network=host \
-  -v "${ROOT}:/src:Z" \
-  -v "${ROOT}/.cache/go-build:/tmp/zoc-cache/go-build:Z" \
-  -v "${ROOT}/.cache/go-mod:/tmp/go-mod:Z" \
-  -v "${ROOT}/.cache/bun:/tmp/zoc-cache/bun:Z" \
+  -v "${ROOT}:/src:z" \
+  -v "${ROOT}/.cache/go-build:/tmp/zoc-cache/go-build:z" \
+  -v "${ROOT}/.cache/go-mod:/tmp/go-mod:z" \
+  -v "${ROOT}/.cache/bun:/tmp/zoc-cache/bun:z" \
   -e HOME=/tmp/zoc-home \
   -e GOCACHE=/tmp/zoc-cache/go-build \
   -e GOMODCACHE=/tmp/go-mod \
@@ -31,11 +31,13 @@ podman run --rm \
   -e ZOC_UPSTREAM_COMMIT \
   -e ZOC_UPDATER_PUBLIC_KEY \
   -e MYGO_UPDATER_PRIVATE_KEY \
+  -e GH_TOKEN \
   -e ZOC_SMOKE_DIR \
   -e ZOC_SMOKE_PORT \
   -e ZOC_SMOKE_INBOX \
   -e ZOC_PERF_DIR \
   -e ZOC_PERF_PORT \
   -e ZOC_PERF_SECONDS \
+  -e ZOC_BIN \
   -w /src \
   "${IMAGE}" "$@"

@@ -90,10 +90,11 @@ type PickedFile struct {
 
 // AttachmentOptions narrows the native picker.
 type AttachmentOptions struct {
-	Title      string   `json:"title,omitempty"`
-	Multiple   bool     `json:"multiple,omitempty"`
-	Extensions []string `json:"extensions,omitempty"`
-	MIMETypes  []string `json:"mimeTypes,omitempty"`
+	Title       string   `json:"title,omitempty"`
+	DefaultPath string   `json:"defaultPath,omitempty"`
+	Multiple    bool     `json:"multiple,omitempty"`
+	Extensions  []string `json:"extensions,omitempty"`
+	MIMETypes   []string `json:"mimeTypes,omitempty"`
 }
 
 // NativeProject is the presentation subset of a project for Native UI.
@@ -145,12 +146,7 @@ func (s *Service) MainWindow() *mygo.Window {
 // Bootstrap returns server profiles and identity for the Web UI. It never
 // returns passwords or tokens.
 func (s *Service) Bootstrap() Bootstrap {
-	s.mu.Lock()
-	zoom := s.zoom
-	s.mu.Unlock()
-	if zoom == 0 {
-		zoom = 1
-	}
+	zoom := s.GetZoom()
 	return Bootstrap{
 		Version:    s.Version,
 		Platform:   "desktop",
@@ -397,10 +393,11 @@ func (s *Service) ReadClipboardImage() string {
 // ZOC keeps no copy.
 func (s *Service) PickAttachmentFiles(ctx context.Context, opts AttachmentOptions) ([]PickedFile, error) {
 	paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{
-		Parent:   mygo.CallerWindow(ctx),
-		Title:    opts.Title,
-		Multiple: opts.Multiple,
-		Filters:  []mygo.FileFilter{{Name: "Files", Extensions: opts.Extensions, MIMETypes: opts.MIMETypes}},
+		Parent:      mygo.CallerWindow(ctx),
+		Title:       opts.Title,
+		DefaultPath: opts.DefaultPath,
+		Multiple:    opts.Multiple,
+		Filters:     []mygo.FileFilter{{Name: "Files", Extensions: opts.Extensions, MIMETypes: opts.MIMETypes}},
 	})
 	if err != nil || len(paths) == 0 {
 		return nil, err
@@ -431,10 +428,11 @@ func (s *Service) PickAttachmentFiles(ctx context.Context, opts AttachmentOption
 // reading their contents.
 func (s *Service) PickFilePaths(ctx context.Context, opts AttachmentOptions) ([]string, error) {
 	return mygo.Dialog.Open(mygo.OpenDialogOptions{
-		Parent:   mygo.CallerWindow(ctx),
-		Title:    opts.Title,
-		Multiple: opts.Multiple,
-		Filters:  []mygo.FileFilter{{Name: "Files", Extensions: opts.Extensions, MIMETypes: opts.MIMETypes}},
+		Parent:      mygo.CallerWindow(ctx),
+		Title:       opts.Title,
+		DefaultPath: opts.DefaultPath,
+		Multiple:    opts.Multiple,
+		Filters:     []mygo.FileFilter{{Name: "Files", Extensions: opts.Extensions, MIMETypes: opts.MIMETypes}},
 	})
 }
 
@@ -475,6 +473,13 @@ func (s *Service) CheckAppExists(name string) bool {
 
 // GetZoom returns the Web UI zoom factor.
 func (s *Service) GetZoom() float64 {
+	if w := s.MainWindow(); w != nil {
+		if page := w.Page(); page != nil {
+			if zoom := page.ZoomFactor(); zoom > 0 {
+				return zoom
+			}
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.zoom == 0 {

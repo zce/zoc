@@ -50,7 +50,7 @@ The built app needs no Node/Bun and no separately installed OpenCode runtime.
 `mygo build` writes `build/linux-amd64/`:
 
 - `zoc` executable, `.desktop`, icon and MIME XML;
-- `zoc-<version>-linux-amd64.tar.gz` with `install.sh`;
+- `zoc-<version>-linux-amd64.tar.gz`, installed with the separate `install.sh` beside it;
 - `zoc-<version>-1.x86_64.rpm`;
 - signed update archives/manifests only when `MYGO_UPDATER_PRIVATE_KEY` and a public key are configured.
 
@@ -71,3 +71,14 @@ The official app is built from upstream; there is no ZOC frontend fork to hot-re
 - `WebViewAvailable` fails or the window is blank: install the runtime packages (`gtk3`, `webkit2gtk4.1`) and check the app's stderr. In containers, WebKitGTK needs an X server (Xvfb) and often `WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1`.
 - DMA-BUF blank windows: ZOC follows MyGo's default and does not force-enable WebKitGTK DMA-BUF rendering. Measure before changing it (see [Performance](PERFORMANCE.md)).
 - Upstream patch failure: the pinned SHA and patch no longer agree. Do not bypass the gate; update the patch deliberately and rerun all checks.
+
+## Reproducibility check
+
+Two consecutive `scripts/build.sh` runs from the same working tree on 2026-11-16 produced:
+
+- identical `zoc` executable SHA-256 `2e2c5f9f1d72a488e61e8e9857823db79dfc7e1863b568b4458f8d53a9aedb08`;
+- identical RPM SHA-256 `3ac5eb578176f5772cd20f7df73c58e233e07c7e8265d07294f82bba814846c5`;
+- identical frontend tree SHA-256 `31ce04f7359dc5349d3aca09fdcc775a26f4943082f2cfa017325f5eda2c0a89`;
+- different `tar.gz` SHA-256s, because gzip records a timestamp in its header.
+
+The archive difference is packaging metadata, not code. Release metadata records the upstream SHA, toolchain versions, adapter hashes and frontend hash so a release can be rebuilt from the ZOC commit and upstream SHA.

@@ -23,6 +23,13 @@ The screenshot is the MyGo Native UI **Servers & Inbox** rendered under WebKitGT
 
 See [Feature parity](docs/FEATURE_PARITY.md) and [Manual acceptance](docs/ACCEPTANCE.md).
 
+## Verification snapshot
+
+- CI `43911629510` on `97455cb`: passed format/vet/tests, adapter typecheck, frontend gates, Linux packaging, WebKitGTK + Native UI smoke, and artifact upload.
+- Upstream sync dry run `43910157889`: resolved `anomalyco/opencode` `dev`, ran all gates, built the artifact, passed smoke, generated notes, and correctly skipped publishing.
+- The fixture smoke asserts the official UI mounts in WebKitGTK, `/api/info` and `/api/event` are reached, the Go-backed WebSocket opens and receives an `attached` frame, storage/clipboard bridge round trips, and the Native UI inbox renders a 980×680 window.
+- Real OpenCode Server and Fedora GNOME/Wayland checks remain manual; see [Manual acceptance](docs/ACCEPTANCE.md).
+
 ## Runtime requirements
 
 - Fedora Linux x86_64 (primary), GNOME, Wayland.
@@ -44,9 +51,9 @@ CI produces `build/linux-amd64/` containing:
 - `upstream.json` and `SHA256SUMS` — provenance and checksums.
 
 ```sh
-# User-managed archive
+# User-managed archive: keep install.sh beside the archive
 tar -xzf zoc-0.1.0-linux-amd64.tar.gz
-./install.sh
+sh install.sh zoc-0.1.0-linux-amd64.tar.gz
 
 # Or RPM
 sudo dnf install ./zoc-0.1.0-1.x86_64.rpm
@@ -80,6 +87,14 @@ No host toolchain or package is needed. Podman is the only local prerequisite.
 ```
 
 The pinned image is defined by [Containerfile](Containerfile): Fedora 45 by digest, Go 1.27.4 and Bun 1.4.4 by checksum, MyGo 0.9.2, and the upstream OpenCode SHA in [upstream/upstream.json](upstream/upstream.json). See [Build](docs/BUILD.md).
+
+## Known limitations
+
+- Real OpenCode Server workflows, real PTY terminal interaction, CJK composition, native dialogs/notifications and Fedora GNOME/Wayland rendering still require the manual checklist. CI proves WebKitGTK/Xvfb and a fixture, not the desktop.
+- The upstream `platform.draftStore` blob hook is not implemented; text drafts and settings persist in ZOC storage, but draft image bytes are not guaranteed across a restart.
+- Signed in-app updates are wired only when the updater key pair is provisioned; this build publishes plain artifacts.
+- The official Web UI keeps its own server registry. A ZOC profile and that registry can show the same server; removing a ZOC profile does not remove the Web UI's copy.
+- Server plugins, WSL/SSH plugin servers and all Electron-only GUI plugin host features are out of scope.
 
 ## Repository layout
 

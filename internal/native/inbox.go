@@ -115,6 +115,8 @@ func (a *Inbox) Open() {
 		if a.win == w {
 			a.win = nil
 		}
+		a.passwords = map[string]string{}
+		a.formPassword = ""
 		a.mu.Unlock()
 	})
 }

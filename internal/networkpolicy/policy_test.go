@@ -53,6 +53,11 @@ func TestPolicyAllowsOnlyConfiguredOrigins(t *testing.T) {
 	if p.Allows("https://evil.example/") {
 		t.Fatal("unconfigured host was allowed")
 	}
+	for _, alias := range []string{"http://localhost:4096/api", "http://[::1]:4096/api"} {
+		if !p.Allows(alias) {
+			t.Fatalf("loopback alias %s was refused", alias)
+		}
+	}
 }
 
 func TestCheckRedirectRefusesCrossOrigin(t *testing.T) {

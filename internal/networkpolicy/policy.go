@@ -37,7 +37,7 @@ func (p *Policy) Replace(rawURLs []string) error {
 		if err != nil {
 			return err
 		}
-		next[origin] = struct{}{}
+		addOrigin(next, origin)
 	}
 	p.mu.Lock()
 	p.origins = next
@@ -52,9 +52,28 @@ func (p *Policy) Allow(raw string) error {
 		return err
 	}
 	p.mu.Lock()
-	p.origins[origin] = struct{}{}
+	addOrigin(p.origins, origin)
 	p.mu.Unlock()
 	return nil
+}
+
+// addOrigin also admits the loopback spellings of a loopback origin:
+// localhost, 127.0.0.1 and ::1 name the same local server. Other hosts are
+// added exactly.
+func addOrigin(set map[string]struct{}, origin string) {
+	set[origin] = struct{}{}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return
+	}
+	host := strings.ToLower(u.Hostname())
+	if host != "localhost" && host != "127.0.0.1" && host != "::1" {
+		return
+	}
+	port := u.Port()
+	for _, alias := range []string{"localhost", "127.0.0.1", "::1"} {
+		set[u.Scheme+"://"+net.JoinHostPort(alias, port)] = struct{}{}
+	}
 }
 
 // Allows reports whether raw is an HTTP(S) URL on an allowed origin.
@@ -110,7 +129,7 @@ func (p *Policy) CheckRedirect(req *http.Request, via []*http.Request) error {
 func Origin(raw string) (string, error) {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil {
-		return "", fmt.Errorf("invalid server URL: %w", err)
+		return "", fmt.Errorf("invalid server URL")
 	}
 	switch u.Scheme {
 	case "http", "https":
@@ -149,7 +168,7 @@ func ValidateServerURL(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	u, err := url.Parse(raw)
 	if err != nil {
-		return "", fmt.Errorf("invalid server URL: %w", err)
+		return "", fmt.Errorf("invalid server URL")
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return "", fmt.Errorf("server URL must use http or https")
