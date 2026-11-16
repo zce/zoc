@@ -153,6 +153,8 @@ jobs:
           UPSTREAM_SHA: ${{ steps.upstream.outputs.sha }}
         run: |
           tag="zoc-v${VERSION}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
             echo "error: tag ${tag} already exists" >&2
             exit 1
