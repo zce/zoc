@@ -157,6 +157,9 @@ pub enum Command {
     LoadBranches {
         directories: Vec<String>,
     },
+    ReleaseSession {
+        session: String,
+    },
     Delete {
         session: String,
     },
@@ -261,10 +264,17 @@ pub fn spawn(events: UiSender<Event>) -> Sender<Command> {
         };
 
         let mut client: Option<ServiceClient> = None;
+        let mut watch_task: Option<JoinHandle<()>> = None;
         while let Ok(command) = rx.recv() {
             if let Command::Connect(config) = command {
-                // Invalidate any previous event stream before attempting the new endpoint.
+                // Invalidate and stop any previous event stream before attempting
+                // the new endpoint. The old store must not stay alive behind a
+                // silent keepalive after the client has moved on.
                 sequence.fetch_add(1, Ordering::AcqRel);
+                if let Some(task) = watch_task.take() {
+                    task.abort();
+                }
+                drop(client.take());
                 match runtime.block_on(ServiceClient::connect(&config)) {
                     Ok(service) => {
                         let info = serde_json::to_value(&service.info).unwrap_or(Value::Null);
@@ -280,7 +290,6 @@ pub fn spawn(events: UiSender<Event>) -> Sender<Command> {
                                 );
                             }
                             Err(error) => {
-                                client = None;
                                 emit(
                                     &events,
                                     Event::Error(format!("Cannot list projects: {error}")),
@@ -290,17 +299,16 @@ pub fn spawn(events: UiSender<Event>) -> Sender<Command> {
                         }
                         service.store.start();
                         let generation = sequence.fetch_add(1, Ordering::AcqRel) + 1;
-                        spawn_store_watch(
+                        watch_task = Some(spawn_store_watch(
                             service.store.clone(),
                             generation,
                             sequence.clone(),
                             runtime.handle().clone(),
                             events.clone(),
-                        );
+                        ));
                         client = Some(service);
                     }
                     Err(error) => {
-                        client = None;
                         emit(&events, Event::Error(format!("Connection failed: {error}")));
                     }
                 }
@@ -338,6 +346,19 @@ struct StoreConnection {
     connection: Mutex<Option<opencode_api::events::Connection>>,
     _task: Mutex<Option<JoinHandle<()>>>,
     context: Arc<Mutex<WatchContext>>,
+}
+
+impl Drop for StoreConnection {
+    fn drop(&mut self) {
+        if let Some(task) = self
+            ._task
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+        {
+            task.abort();
+        }
+    }
 }
 
 impl StoreConnection {
@@ -515,6 +536,9 @@ impl ServiceClient {
             )
             .await
             .map_err(|error| anyhow::anyhow!(error.tui_message()))?;
+        // Eviction drops admitted inbox items that were already confirmed by
+        // the server. Restore them together with the transcript.
+        let _ = self.store.data.pending_sync(&session_id).await;
         let _ = self.store.data.permission_sync(&session_id).await;
         let _ = self.store.data.form_sync(id, None).await;
 
@@ -522,12 +546,24 @@ impl ServiceClient {
     }
 
     fn set_active_session(&self, session: String, epoch: u64) {
-        let mut context = self
-            .store
-            .context
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        context.session = Some((session, epoch));
+        let previous = {
+            let mut context = self
+                .store
+                .context
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let previous = context.session.clone();
+            context.session = Some((session.clone(), epoch));
+            previous
+        };
+        // The store keeps every transcript it has read. A client view needs one
+        // at a time, so drop the previous transcript before reading the next.
+        // The public store API is the same eviction path used when a view closes.
+        if let Some((previous, _)) = previous
+            && previous != session
+        {
+            self.store.data.evict(&SessionID(previous));
+        }
     }
 
     async fn has_archived(&self) -> anyhow::Result<bool> {
@@ -855,6 +891,9 @@ async fn run_command(
                 }
             });
         }
+        Command::ReleaseSession { session } => {
+            service.store.data.evict(&SessionID(session));
+        }
         Command::Delete { session } => {
             service.delete(&session).await?;
             service.store.data.forget(&SessionID(session.clone()));
@@ -964,7 +1003,7 @@ fn spawn_store_watch(
     valid: Arc<AtomicU64>,
     runtime: Handle,
     events: UiSender<Event>,
-) {
+) -> JoinHandle<()> {
     runtime.spawn(async move {
         let mut revisions = store.data.subscribe();
         let mut seen = store.data.revision();
@@ -994,6 +1033,27 @@ fn spawn_store_watch(
                     let context = store.context.lock()
                         .unwrap_or_else(|error| error.into_inner())
                         .clone();
+
+                    // A background run can rebuild its transcript from events after
+                    // it was evicted. Drop that transcript again when the run ends;
+                    // the open session keeps its data.
+                    if !changes.status.is_empty() {
+                        let current = context.session.as_ref().map(|(session, _)| session.clone());
+                        let running: Vec<String> = store.data.read(|state| {
+                            state
+                                .active_sessions()
+                                .into_iter()
+                                .map(|session| session.0.clone())
+                                .collect()
+                        });
+                        for session in &changes.status {
+                            if current.as_deref() != Some(session.0.as_str())
+                                && !running.iter().any(|id| id == &session.0)
+                            {
+                                store.data.evict(session);
+                            }
+                        }
+                    }
 
                     if changes.projects() {
                         let projects = store.data.read(|state| {
@@ -1106,7 +1166,7 @@ fn spawn_store_watch(
                 }
             }
         }
-    });
+    })
 }
 
 #[cfg(test)]

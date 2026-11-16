@@ -532,9 +532,7 @@ impl Zoc {
         self.data.epoch = self.data.epoch.wrapping_add(1);
         self.data.projects.clear();
         self.data.sessions.clear();
-        self.data.messages.clear();
-        self.data.permissions.clear();
-        self.data.forms.clear();
+        self.clear_session_caches();
         self.data.models.clear();
         self.data.agents.clear();
         self.data.selected_model = None;
@@ -557,6 +555,7 @@ impl Zoc {
 
     fn switch_project(&mut self, id: String, cx: &mut Context<Self>) {
         self.save_draft(cx);
+        self.clear_session_caches();
         self.data.current_project = Some(id.clone());
         self.data.current_session = None;
         self.data.epoch = self.data.epoch.wrapping_add(1);
@@ -603,6 +602,31 @@ impl Zoc {
             self.data.prefs.drafts.insert(id.clone(), text);
             self.data.prefs.save();
         }
+    }
+
+    /// Drop the JSON snapshots and rendered text state owned by one transcript.
+    /// The store handles its own transcript eviction when the active session
+    /// changes; this releases the client-side copies and GPUI text caches.
+    fn forget_session_data(&mut self, session: &str) {
+        self.data.messages.remove(session);
+        self.data.permissions.remove(session);
+        self.data.forms.remove(session);
+    }
+
+    fn prepare_session_switch(&mut self, next: &str) {
+        if let Some(previous) = self.data.current_session.clone()
+            && previous != next
+        {
+            self.forget_session_data(&previous);
+            self.markdown.clear();
+        }
+    }
+
+    fn clear_session_caches(&mut self) {
+        self.data.messages.clear();
+        self.data.permissions.clear();
+        self.data.forms.clear();
+        self.markdown.clear();
     }
 
     fn visible_inbox_groups(&self) -> Vec<(InboxGroup, Vec<api::Session>)> {
@@ -981,6 +1005,7 @@ impl Zoc {
                     });
                 if let Some(session) = target {
                     if self.data.current_session.as_ref() != Some(&session) {
+                        self.prepare_session_switch(&session);
                         self.data.select_session(session.clone());
                         self.rebuild_rows(cx);
                         self.send_command(Command::LoadConversation {
@@ -993,6 +1018,7 @@ impl Zoc {
                     // Never leave its old transcript shown under a different list.
                     self.data.current_session = None;
                     self.data.epoch = self.data.epoch.wrapping_add(1);
+                    self.clear_session_caches();
                     self.rows.borrow_mut().clear();
                     self.scroller.update(cx, |state, cx| state.reset(0, cx));
                 }
@@ -1104,6 +1130,7 @@ impl Zoc {
                     .sessions
                     .retain(|existing| existing.id.as_str() != id);
                 self.data.sessions.insert(0, *session);
+                self.prepare_session_switch(&id);
                 self.data.select_session(id.clone());
                 self.rebuild_rows(cx);
                 self.send_command(Command::LoadConversation {
@@ -1170,9 +1197,11 @@ impl Zoc {
                 self.data.sessions.retain(|item| item.id.0 != session);
                 *self.menu_target.borrow_mut() = None;
                 self.confirm_delete = None;
+                self.forget_session_data(&session);
                 if self.data.current_session.as_deref() == Some(session.as_str()) {
                     self.data.current_session = None;
                     self.data.epoch = self.data.epoch.wrapping_add(1);
+                    self.markdown.clear();
                     self.rows.borrow_mut().clear();
                     self.scroller.update(cx, |state, cx| state.reset(0, cx));
                     self.show_home = true;
@@ -1448,6 +1477,7 @@ impl Zoc {
         self.data.archived = !self.data.archived;
         self.data.current_session = None;
         self.data.epoch = self.data.epoch.wrapping_add(1);
+        self.clear_session_caches();
         self.data.sessions.clear();
         self.rows.borrow_mut().clear();
         self.scroller.update(cx, |state, cx| state.reset(0, cx));
@@ -1459,6 +1489,17 @@ impl Zoc {
         self.show_home = true;
         self.show_connection = false;
         self.show_session_actions = false;
+        if let Some(session) = self.data.current_session.clone()
+            && (!self.data.messages.is_empty()
+                || !self.rows.borrow().is_empty()
+                || !self.markdown.is_empty())
+        {
+            self.data.epoch = self.data.epoch.wrapping_add(1);
+            self.clear_session_caches();
+            self.rows.borrow_mut().clear();
+            self.scroller.update(cx, |state, cx| state.reset(0, cx));
+            self.send_command(Command::ReleaseSession { session });
+        }
         cx.notify();
     }
 
@@ -1749,6 +1790,7 @@ impl Zoc {
         self.show_home = false;
         self.show_connection = false;
         self.expanded_tools.clear();
+        self.prepare_session_switch(&id);
         self.data.select_session(id.clone());
         self.rebuild_rows(cx);
         self.send_command(Command::LoadConversation {

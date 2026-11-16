@@ -109,7 +109,7 @@ jobs:
         with:
           name: zoc-linux-x86_64-pr${{ github.event.pull_request.number }}
           path: dist/
-          compression-level: 0
+          compression-level: 9
           if-no-files-found: error
           retention-days: 14
       - name: Upload main prototype
@@ -118,6 +118,6 @@ jobs:
         with:
           name: zoc-linux-x86_64-main
           path: dist/
-          compression-level: 0
+          compression-level: 9
           if-no-files-found: error
           retention-days: 21

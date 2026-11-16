@@ -38,7 +38,7 @@
 - [ ] No automatic GitHub Release/tag/updater.
 - [ ] Validate representative real API fixtures, out-of-order/duplicate events, disconnects and repeated navigation.
 - [ ] Exercise 1000+ messages, large Markdown/code, rapid streaming, idle and DPI/IME behavior.
-- [ ] Record measured executable size, RSS, idle CPU and test environment in `docs/PERFORMANCE.md`.
+- [x] Record measured executable size, RSS, idle CPU and test environment in `docs/PERFORMANCE.md` (container/Xvfb/llvmpipe; native Wayland pending).
 - [ ] Maintain `docs/UPSTREAM_COMPAT.md` and core feature-parity matrix.
 
 ## Deferred
