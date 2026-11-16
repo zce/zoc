@@ -83,3 +83,18 @@ Without these, releases are plain RPM/archive artifacts and the app does not cla
 - CI `43919001926` on `c07f05e`: passed with the final release workflow and checksum fix.
 - The downloaded `zoc-v0.1.1` assets passed `sha256sum -c SHA256SUMS`; `install.sh` installed the archive into a temporary `HOME`, and the installed binary passed the WebKitGTK + Native UI smoke.
 - `scripts/container.sh bash -lc 'sh build/linux-amd64/install.sh build/linux-amd64/zoc-0.1.0-linux-amd64.tar.gz'` installs into a temporary `HOME`; the installed `~/.local/bin/zoc` is executable and the desktop entry is written.
+
+## Rebuilding a published release
+
+The release workflow passes `ZOC_VERSION` (and `ZOC_UPSTREAM_COMMIT` for the tested SHA) into the packaging build. To rebuild an existing release:
+
+```sh
+git fetch --tags
+git checkout zoc-v0.1.1
+export ZOC_VERSION=0.1.1
+export ZOC_UPSTREAM_COMMIT=e4606463e7d18fd126ecfac3ec04602f1e44814b
+./scripts/container.sh ./scripts/check.sh
+./scripts/container.sh ./scripts/build.sh
+```
+
+The values are in the release's attached `upstream.json`. The repository `VERSION`/`upstream/upstream.json` files are the baseline for local builds and may be one patch ahead of an older tag after a forced ZOC-only release; use the tag's release metadata rather than guessing. Two consecutive local builds at the same tree produced identical `zoc` and RPM hashes and an identical frontend hash.
