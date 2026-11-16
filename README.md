@@ -11,7 +11,7 @@ ZOC is **client-only**. It never bundles, installs, starts, supervises or update
 | Rust/GPUI prototype | replaced | The Rust sources and Cargo manifests are gone from this branch. |
 | Official Web UI host | implemented | Built from a pinned `anomalyco/opencode` `dev` SHA; PWA service worker disabled. |
 | Fetch/SSE transport | implemented | MyGo's Go-backed fetch, restricted to configured server origins. |
-| PTY/WebSocket transport | implemented | MyGo WebSocket through the upstream `openSocket` hook; no `Origin` header. |
+| PTY/WebSocket transport | implemented | MyGo WebSocket through the upstream `openSocket` hook; no `Origin` header; open + `attached` frame verified in WebKit smoke. Terminal UI needs real-server verification. |
 | Desktop capabilities | implemented | Dialogs, clipboard, notifications, menus, shortcuts, deep links, window state, app-owned storage. |
 | Native UI workflow | implemented | **Servers & Inbox**: server profiles, projects, sessions, connection test, open in Web UI. |
 | Upstream sync/release | implemented | Daily/manual workflow pins the SHA, gates, builds, publishes only on success. |

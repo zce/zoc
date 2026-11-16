@@ -7,12 +7,15 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/net/websocket"
 )
 
 func main() {
@@ -60,6 +63,15 @@ func main() {
 		record(r)
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"data":{}}`))
+	})
+	mux.Handle("/api/experimental/persistent-pty/pty-fixture/connect", websocket.Server{
+		Handshake: func(*websocket.Config, *http.Request) error { return nil },
+		Handler: func(ws *websocket.Conn) {
+			record(ws.Request())
+			websocket.Message.Send(ws, `{"type":"attached","inputProtocol":1,"info":{"size":{"cols":80,"rows":24}},"role":"controller"}`)
+			websocket.Message.Send(ws, `{"type":"replay_complete"}`)
+			io.Copy(io.Discard, ws)
+		},
 	})
 	mux.HandleFunc("/api/location", func(w http.ResponseWriter, r *http.Request) {
 		record(r)

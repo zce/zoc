@@ -33,7 +33,7 @@ for _ in $(seq 1 50); do
 done
 
 set +e
-timeout 45s xvfb-run -a -s "-screen 0 1280x900x24" dbus-run-session -- env \
+timeout 60s xvfb-run -a -s "-screen 0 1280x900x24" dbus-run-session -- env \
   GDK_BACKEND=x11 \
   LIBGL_ALWAYS_SOFTWARE=1 \
   WEBKIT_DISABLE_DMABUF_RENDERER=1 \
@@ -74,6 +74,12 @@ if ! grep -q "GET /api/event" "${LOG}"; then
   cat "${LOG}" >&2
   exit 1
 fi
+if ! grep -q "GET /api/experimental/persistent-pty/pty-fixture/connect" "${LOG}"; then
+  echo "error: the MyGo WebSocket transport never reached the fixture" >&2
+  cat "${LOG}" >&2
+  exit 1
+fi
+echo "WebSocket transport verified (open + text frame)"
 
 echo "WebKitGTK smoke passed"
 echo "  smoke:   ${SMOKE}"

@@ -144,6 +144,23 @@ await window.mygo.call("Desktop.StorageUpdate", "smoke", { key: "value" }, [])
 const storage = await window.mygo.call("Desktop.StorageItems", "smoke")
 await window.mygo.call("Desktop.WriteClipboardText", "zoc-smoke")
 const clipboard = await window.mygo.call("Desktop.ReadClipboardText")
+const wsURL = new URL(bootstrap.servers[0].url)
+wsURL.protocol = wsURL.protocol === "https:" ? "wss:" : "ws:"
+wsURL.pathname = "/api/experimental/persistent-pty/pty-fixture/connect"
+wsURL.search = "?ticket=fixture-ticket"
+const wsEvents = window.mygo.channel()
+void window.mygo.call("plugin:websocket.Connect", {
+  id: "smoke-ws", url: wsURL.href, protocols: [], headers: []
+}, wsEvents)
+const wsIterator = wsEvents[Symbol.asyncIterator]()
+const wsFirst = await Promise.race([
+  wsIterator.next(),
+  new Promise((_, reject) => setTimeout(() => reject(new Error("websocket timeout")), 5000))
+])
+const wsSecond = await Promise.race([
+  wsIterator.next(),
+  new Promise((_, reject) => setTimeout(() => reject(new Error("websocket timeout")), 5000))
+])
 return JSON.stringify({
   title: document.title,
   root: !!document.querySelector("#root"),
@@ -154,6 +171,7 @@ return JSON.stringify({
   storage: storage.items.key ?? null,
   clipboard,
   bash: await window.mygo.call("Desktop.CheckAppExists", "bash"),
+  wsEvents: [wsFirst.value, wsSecond.value],
   text: (document.body?.innerText ?? "").slice(0, 4000)
 })`)
 				rss, hwm := processMemory()
@@ -174,7 +192,10 @@ return JSON.stringify({
 							strings.Contains(s, `"storage":"value"`) &&
 							strings.Contains(s, `"clipboard":"zoc-smoke"`) &&
 							strings.Contains(s, `"bash":true`) &&
-							strings.Contains(s, `"servers":1`)
+							strings.Contains(s, `"servers":1`) &&
+							strings.Contains(s, `"type":"open"`) &&
+							strings.Contains(s, `"type":"text"`) &&
+							strings.Contains(s, `attached`)
 					}
 				}
 				data, _ := json.MarshalIndent(result, "", "  ")

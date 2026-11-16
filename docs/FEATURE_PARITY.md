@@ -22,7 +22,7 @@ Status values:
 | Permissions/questions | Web | Official Web UI; never auto-approved by ZOC. Manual real-server test required. |
 | Markdown/code/images/previews | Web | Upstream lazy assets retained; 4 WASM assets in build. |
 | Attachments | Web + adapter | Native attachment picker returns file bytes through the bridge; paste/drop remains upstream Web UI. |
-| Integrated terminal | Web + adapter | PTY `openSocket` patched to MyGo WebSocket; origin policy and ticket path constrained. **Unverified against a real server/terminal interaction.** |
+| Integrated terminal | Web + adapter | PTY `openSocket` patched to MyGo WebSocket; origin policy and ticket path constrained. WebSocket open + `attached` frame verified in WebKit smoke. **Terminal UI against a real server is unverified.** |
 | Clipboard | Web + adapter | `Desktop.WriteClipboardText`/`ReadClipboardText` verified in WebKit smoke; image read implemented. |
 | Keyboard navigation/shortcuts | Web + native | Upstream Web UI; native menu accelerators and `Ctrl+Shift+I`. |
 | Chinese input composition | Web | Upstream Web UI + WebKitGTK; manual Fedora test required. |
