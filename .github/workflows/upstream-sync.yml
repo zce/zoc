@@ -68,13 +68,7 @@ jobs:
           previous_sha=""
           if [[ -n "${latest}" ]]; then
             previous_version="${latest#zoc-v}"
-            version="$(python3 - "${previous_version}" <<'PY'
-import sys
-parts = [int(x) for x in sys.argv[1].split(".")]
-parts[2] += 1
-print(".".join(map(str, parts)))
-PY
-)"
+            version="$(python3 scripts/next-version.py "${previous_version}")"
             mkdir -p /tmp/last-release
             if gh release download "${latest}" --pattern upstream.json --dir /tmp/last-release --clobber 2>/dev/null; then
               previous_sha="$(jq -r '.upstreamCommit // ""' /tmp/last-release/upstream.json)"
@@ -82,13 +76,7 @@ PY
           fi
           # Never reuse a tag: pick the first unused patch version.
           while git rev-parse -q --verify "refs/tags/zoc-v${version}" >/dev/null; do
-            version="$(python3 - "${version}" <<'PY'
-import sys
-parts = [int(x) for x in sys.argv[1].split(".")]
-parts[2] += 1
-print(".".join(map(str, parts)))
-PY
-)"
+            version="$(python3 scripts/next-version.py "${version}")"
           done
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "previous_sha=${previous_sha}" >> "$GITHUB_OUTPUT"
