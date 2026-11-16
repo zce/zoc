@@ -80,6 +80,6 @@ Without these, releases are plain RPM/archive artifacts and the app does not cla
 - CI `43911629510` on `97455cb`: the same checks plus the Native UI screenshot gate passed; the uploaded artifact checksums verified locally.
 - Publish run `43917676504`: built `zoc-v0.1.1`, published the release at `https://github.com/zce/zoc/releases/tag/zoc-v0.1.1`, and attached the RPM, archive, installer, `SHA256SUMS` and `upstream.json`.
 - Unchanged run `43918630325`: found the same upstream SHA and exited successfully with every build/release step skipped.
-- CI `43917684149` on `0c27347`: passed with the final release workflow and checksum fix.
+- CI `43919001926` on `c07f05e`: passed with the final release workflow and checksum fix.
 - The downloaded `zoc-v0.1.1` assets passed `sha256sum -c SHA256SUMS`; `install.sh` installed the archive into a temporary `HOME`, and the installed binary passed the WebKitGTK + Native UI smoke.
 - `scripts/container.sh bash -lc 'sh build/linux-amd64/install.sh build/linux-amd64/zoc-0.1.0-linux-amd64.tar.gz'` installs into a temporary `HOME`; the installed `~/.local/bin/zoc` is executable and the desktop entry is written.
