@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main, mygo]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Podman verification and Linux artifact
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Podman
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman uidmap slirp4netns
+          podman --version
+
+      - name: Build pinned toolchain image
+        run: podman build --pull=missing -f Containerfile -t localhost/zoc-build:2026-11-16 .
+
+      - name: Format, vet, unit tests, adapter typecheck, frontend gates
+        run: ./scripts/container.sh ./scripts/check.sh
+
+      - name: Build Linux x86_64 artifact
+        run: ./scripts/container.sh ./scripts/build.sh
+
+      - name: WebKitGTK smoke test under Xvfb
+        run: ./scripts/container.sh ./scripts/smoke.sh
+
+      - name: Upload Linux artifact and metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: zoc-linux-x86_64
+          path: |
+            build/linux-amd64/
+            build/upstream.json
+          if-no-files-found: error
+
+      - name: Show artifact checksums
+        run: cat build/linux-amd64/SHA256SUMS
