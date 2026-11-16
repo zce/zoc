@@ -33,6 +33,7 @@ podman run --rm \
   -e MYGO_UPDATER_PRIVATE_KEY \
   -e ZOC_SMOKE_DIR \
   -e ZOC_SMOKE_PORT \
+  -e ZOC_SMOKE_INBOX \
   -e ZOC_PERF_DIR \
   -e ZOC_PERF_PORT \
   -e ZOC_PERF_SECONDS \

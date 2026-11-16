@@ -36,7 +36,9 @@ jobs:
       - name: Build Linux x86_64 artifact
         run: ./scripts/container.sh ./scripts/build.sh
 
-      - name: WebKitGTK smoke test under Xvfb
+      - name: WebKitGTK + Native UI smoke test under Xvfb
+        env:
+          ZOC_SMOKE_INBOX: "1"
         run: ./scripts/container.sh ./scripts/smoke.sh
 
       - name: Upload Linux artifact and metadata
@@ -46,6 +48,7 @@ jobs:
           path: |
             build/linux-amd64/
             build/upstream.json
+            .cache/smoke/smoke-inbox.png
           if-no-files-found: error
 
       - name: Show artifact checksums

@@ -11,6 +11,8 @@ PORT="${ZOC_PERF_PORT:-4299}"
 OUT="${ZOC_PERF_DIR:-${ROOT}/.cache/perf}"
 rm -rf "${OUT}"
 mkdir -p "${OUT}/user-data"
+: > "${OUT}/samples.tsv"
+chmod 644 "${OUT}/samples.tsv"
 
 if [[ ! -x "${BIN}" ]]; then
   echo "error: packaged binary not found at ${BIN}" >&2

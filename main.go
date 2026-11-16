@@ -108,7 +108,7 @@ func main() {
 		}
 
 		if out := os.Getenv("ZOC_SMOKE_OUT"); out != "" {
-			installSmokeProbe(win, out, startedAt)
+			installSmokeProbe(win, out, startedAt, inbox)
 		}
 
 		pendingMu.Lock()
@@ -132,7 +132,7 @@ func main() {
 // installSmokeProbe lets CI verify that the embedded official Web UI
 // actually mounted under WebKitGTK, not merely that the process started. It
 // writes a JSON result and quits. It is inert unless ZOC_SMOKE_OUT is set.
-func installSmokeProbe(win *mygo.Window, out string, startedAt time.Time) {
+func installSmokeProbe(win *mygo.Window, out string, startedAt time.Time, inbox *native.Inbox) {
 	var once sync.Once
 	win.Page().OnDidFinishLoad(func() {
 		once.Do(func() {
@@ -174,6 +174,21 @@ return JSON.stringify({
   wsEvents: [wsFirst.value, wsSecond.value],
   text: (document.body?.innerText ?? "").slice(0, 4000)
 })`)
+				if os.Getenv("ZOC_SMOKE_INBOX") != "" {
+					inbox.Open()
+					time.Sleep(3 * time.Second)
+					if nativeWindow := inbox.Window(); nativeWindow != nil {
+						if png, err := nativeWindow.CapturePage(); err != nil {
+							result := map[string]any{"ok": false, "error": "native inbox capture: " + err.Error()}
+							data, _ := json.MarshalIndent(result, "", "  ")
+							_ = os.WriteFile(out, data, 0o644)
+							mygo.App.Quit()
+							return
+						} else {
+							_ = os.WriteFile(strings.TrimSuffix(out, ".json")+"-inbox.png", png, 0o644)
+						}
+					}
+				}
 				rss, hwm := processMemory()
 				result := map[string]any{
 					"ok":        false,
@@ -195,7 +210,11 @@ return JSON.stringify({
 							strings.Contains(s, `"servers":1`) &&
 							strings.Contains(s, `"type":"open"`) &&
 							strings.Contains(s, `"type":"text"`) &&
-							strings.Contains(s, `attached`)
+							strings.Contains(s, `attached`) &&
+							(os.Getenv("ZOC_SMOKE_INBOX") == "" || func() bool {
+								info, err := os.Stat(strings.TrimSuffix(out, ".json") + "-inbox.png")
+								return err == nil && info.Size() > 20000
+							}())
 					}
 				}
 				data, _ := json.MarshalIndent(result, "", "  ")

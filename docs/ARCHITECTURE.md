@@ -96,6 +96,8 @@ Unsupported optional Electron capabilities (GUI plugin host, voice call state, p
 - lists projects and root sessions from the OpenCode API;
 - filters sessions, opens a session in the official Web UI, and exposes an **Official UI** fallback button everywhere.
 
+![Servers & Inbox](assets/native-inbox.png)
+
 Native UI state is a presentation projection: every snapshot is fetched on demand from OpenCode, with no duplicate reducer and no second SSE connection. Session transcript, composer, permissions, questions and terminal remain in the Web UI.
 
 ## Persistence

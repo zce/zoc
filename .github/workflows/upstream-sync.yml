@@ -113,10 +113,11 @@ jobs:
           MYGO_UPDATER_PRIVATE_KEY: ${{ secrets.MYGO_UPDATER_PRIVATE_KEY }}
         run: ./scripts/container.sh ./scripts/build.sh
 
-      - name: WebKitGTK smoke
+      - name: WebKitGTK + Native UI smoke
         if: steps.previous.outputs.changed == 'true'
         env:
           ZOC_VERSION: ${{ steps.previous.outputs.version }}
+          ZOC_SMOKE_INBOX: "1"
         run: ./scripts/container.sh ./scripts/smoke.sh
 
       - name: Generate release notes

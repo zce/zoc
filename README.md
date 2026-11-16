@@ -17,6 +17,10 @@ ZOC is **client-only**. It never bundles, installs, starts, supervises or update
 | Upstream sync/release | implemented | Daily/manual workflow pins the SHA, gates, builds, publishes only on success. |
 | Fedora/GNOME/Wayland acceptance | **user verification required** | CI proves WebKitGTK/Xvfb behavior, not a real Fedora desktop or real OpenCode Server. |
 
+![ZOC Servers & Inbox](docs/assets/native-inbox.png)
+
+The screenshot is the MyGo Native UI **Servers & Inbox** rendered under WebKitGTK/Xvfb during the smoke test.
+
 See [Feature parity](docs/FEATURE_PARITY.md) and [Manual acceptance](docs/ACCEPTANCE.md).
 
 ## Runtime requirements

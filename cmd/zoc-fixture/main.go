@@ -52,12 +52,14 @@ func main() {
 	mux.HandleFunc("/api/project", func(w http.ResponseWriter, r *http.Request) {
 		record(r)
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte("[]"))
+		now := time.Now().UnixMilli()
+		w.Write([]byte(fmt.Sprintf(`[{"id":"fixture","canonical":"/tmp/zoc-fixture","name":"zoc","time":{"created":%d,"updated":%d}}]`, now, now)))
 	})
 	mux.HandleFunc("/api/session", func(w http.ResponseWriter, r *http.Request) {
 		record(r)
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"data":[],"cursor":{"previous":null,"next":null}}`))
+		now := time.Now().UnixMilli()
+		w.Write([]byte(fmt.Sprintf(`{"data":[{"id":"ses-fixture","projectID":"fixture","cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":%d,"updated":%d},"title":"Fixture session","location":{"directory":"/tmp/zoc-fixture"}}],"cursor":{"previous":null,"next":null}}`, now, now)))
 	})
 	mux.HandleFunc("/api/session/active", func(w http.ResponseWriter, r *http.Request) {
 		record(r)

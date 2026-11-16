@@ -89,6 +89,9 @@ func (a *Inbox) Open() {
 		return
 	}
 	a.servers = a.backend.Profiles()
+	if a.selected == "" && len(a.servers) > 0 {
+		a.selected = a.servers[0].ID
+	}
 	a.mu.Unlock()
 
 	w := mygo.NewWindow(mygo.WindowOptions{
@@ -102,7 +105,11 @@ func (a *Inbox) Open() {
 	})
 	a.mu.Lock()
 	a.win = w
+	selected := a.selected
 	a.mu.Unlock()
+	if selected != "" {
+		a.refresh()
+	}
 	w.OnClosed(func() {
 		a.mu.Lock()
 		if a.win == w {
@@ -110,6 +117,14 @@ func (a *Inbox) Open() {
 		}
 		a.mu.Unlock()
 	})
+}
+
+// Window returns the native window, or nil before it is opened. It is used by
+// smoke tests that capture the rendered native UI.
+func (a *Inbox) Window() *mygo.Window {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.win
 }
 
 func (a *Inbox) invalidate() {
@@ -367,14 +382,16 @@ func (a *Inbox) view(c *ui.Context) {
 				if p.ID == selected {
 					bg = t.SurfacePressed
 				}
-				name := ui.Text(c, p.Name).FontSize(13).SingleLine().FillWidth().Background(bg)
-				if p.ID == selected {
-					name.Bold()
-				}
-				if name.RowClicked() {
-					a.selectServer(p.ID)
-				}
-				ui.Text(c, p.URL).FontSize(11).TextColor(t.TextMuted).SingleLine()
+				ui.Column(c).Background(bg).Children(func() {
+					name := ui.Text(c, p.Name).FontSize(13).SingleLine().FillWidth().Padding(10, 16, 2, 16)
+					if p.ID == selected {
+						name.Bold()
+					}
+					if name.RowClicked() {
+						a.selectServer(p.ID)
+					}
+					ui.Text(c, p.URL).FontSize(11).TextColor(t.TextMuted).SingleLine().Padding(0, 16, 9, 16)
+				})
 			}).Grow(1)
 			ui.Divider(c)
 			ui.Text(c, "Unmigrated workflows stay in the official OpenCode Web UI.").
@@ -550,7 +567,7 @@ func (a *Inbox) detailView(c *ui.Context, profile profiles.Profile, snapshot *de
 
 		sessions := filteredSessions(snapshot.Sessions, chosenID, filter)
 		ui.Row(c).Padding(0, 24, 6, 24).Children(func() {
-			ui.Text(c, fmt.Sprintf("%d sessions", len(sessions))).FontSize(11).TextColor(t.TextMuted)
+			ui.Text(c, sessionCount(len(sessions))).FontSize(11).TextColor(t.TextMuted)
 		})
 		if len(sessions) == 0 {
 			ui.Text(c, "No sessions match.").TextColor(t.TextMuted).Padding(12, 24)
@@ -559,32 +576,34 @@ func (a *Inbox) detailView(c *ui.Context, profile profiles.Profile, snapshot *de
 		ui.List(c, nil, len(sessions), func(i int) {
 			session := sessions[i]
 			row := ui.Column(c).Padding(8, 24).Gap(3).FillWidth()
-			title := ui.Text(c, session.Title).FontSize(13).SingleLine().FillWidth()
-			if title.RowClicked() {
-				if err := a.backend.OpenSession(profile.ID, session.ID); err != nil {
-					a.mu.Lock()
-					a.loadErr = err.Error()
-					a.mu.Unlock()
-					a.invalidate()
-					return
-				}
-				a.backend.FocusMain()
-			}
-			meta := session.ProjectID
-			for _, project := range projects {
-				if project.ID == session.ProjectID {
-					meta = project.Name
-					break
-				}
-			}
-			line := meta + " · " + relativeTime(session.Updated)
-			if session.Busy {
-				line += " · running"
-			}
-			ui.Text(c, line).FontSize(11).TextColor(t.TextMuted).SingleLine()
 			if session.Busy {
 				row.BorderStartWidth(2).BorderColor(t.Accent)
 			}
+			row.Children(func() {
+				title := ui.Text(c, session.Title).FontSize(13).SingleLine().FillWidth().Padding(6, 24, 1, 24)
+				if title.RowClicked() {
+					if err := a.backend.OpenSession(profile.ID, session.ID); err != nil {
+						a.mu.Lock()
+						a.loadErr = err.Error()
+						a.mu.Unlock()
+						a.invalidate()
+						return
+					}
+					a.backend.FocusMain()
+				}
+				meta := session.ProjectID
+				for _, project := range projects {
+					if project.ID == session.ProjectID {
+						meta = project.Name
+						break
+					}
+				}
+				line := meta + " · " + relativeTime(session.Updated)
+				if session.Busy {
+					line += " · running"
+				}
+				ui.Text(c, line).FontSize(11).TextColor(t.TextMuted).SingleLine().Padding(0, 24, 7, 24)
+			})
 		}).Grow(1)
 	})
 }
@@ -629,4 +648,11 @@ func relativeTime(unixMillis int64) string {
 	default:
 		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
 	}
+}
+
+func sessionCount(n int) string {
+	if n == 1 {
+		return "1 session"
+	}
+	return fmt.Sprintf("%d sessions", n)
 }

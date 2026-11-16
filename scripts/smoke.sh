@@ -40,6 +40,7 @@ timeout 60s xvfb-run -a -s "-screen 0 1280x900x24" dbus-run-session -- env \
   WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1 \
   NO_AT_BRIDGE=1 \
   ZOC_SERVER_URL="http://127.0.0.1:${PORT}" \
+  ZOC_SMOKE_INBOX="${ZOC_SMOKE_INBOX:-}" \
   ZOC_USER_DATA="${USER_DATA}" \
   ZOC_SMOKE_OUT="${SMOKE}" \
   "${BIN}" >"${OUT_DIR}/app.log" 2>&1
@@ -80,6 +81,14 @@ if ! grep -q "GET /api/experimental/persistent-pty/pty-fixture/connect" "${LOG}"
   exit 1
 fi
 echo "WebSocket transport verified (open + text frame)"
+if [[ "${ZOC_SMOKE_INBOX:-}" == "1" ]]; then
+  INBOX_PNG="${OUT_DIR}/smoke-inbox.png"
+  if [[ ! -s "${INBOX_PNG}" ]] || [[ "$(stat -c %s "${INBOX_PNG}")" -lt 20000 ]]; then
+    echo "error: native inbox screenshot missing or too small" >&2
+    exit 1
+  fi
+  python3 scripts/check-png.py "${INBOX_PNG}"
+fi
 
 echo "WebKitGTK smoke passed"
 echo "  smoke:   ${SMOKE}"
