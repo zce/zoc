@@ -17,7 +17,7 @@
   "adapterSources": [
     {
       "file": "adapter/src/platform.ts",
-      "sha256": "6e0fc3279a807520a81cb082c469db7c157316789e3561b15886d9542a0c4107"
+      "sha256": "232b801117935aa7cf2905a399aea145afe637feca821899c1b1ebbeabd6192b"
     },
     {
       "file": "adapter/vite.zoc.config.ts",

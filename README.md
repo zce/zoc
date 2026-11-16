@@ -25,8 +25,11 @@ See [Feature parity](docs/FEATURE_PARITY.md) and [Manual acceptance](docs/ACCEPT
 
 ## Verification snapshot
 
-- CI `43911629510` on `97455cb`: passed format/vet/tests, adapter typecheck, frontend gates, Linux packaging, WebKitGTK + Native UI smoke, and artifact upload.
-- Upstream sync dry run `43910157889`: resolved `anomalyco/opencode` `dev`, ran all gates, built the artifact, passed smoke, generated notes, and correctly skipped publishing.
+- Latest artifact: [`zoc-v0.1.1`](https://github.com/zce/zoc/releases/tag/zoc-v0.1.1) (published 2026-11-16).
+- CI `43917684149` on `0c27347`: passed format/vet/tests, adapter typecheck, frontend gates, Linux packaging, WebKitGTK + Native UI smoke, and artifact upload.
+- Upstream sync publish `43917676504`: built and published `zoc-v0.1.1` from `anomalyco/opencode` `dev` at `e4606463e7d18fd126ecfac3ec04602f1e44814b`.
+- Upstream unchanged run `43918630325`: detected the same SHA and exited successfully without building or releasing.
+- Release assets downloaded again and verifed with `sha256sum -c SHA256SUMS`; the released archive was installed with `install.sh` and passed the WebKitGTK + Native UI smoke.
 - The fixture smoke asserts the official UI mounts in WebKitGTK, `/api/info` and `/api/event` are reached, the Go-backed WebSocket opens and receives an `attached` frame, storage/clipboard bridge round trips, and the Native UI inbox renders a 980×680 window.
 - Real OpenCode Server and Fedora GNOME/Wayland checks remain manual; see [Manual acceptance](docs/ACCEPTANCE.md).
 
@@ -52,11 +55,11 @@ CI produces `build/linux-amd64/` containing:
 
 ```sh
 # User-managed archive: keep install.sh beside the archive
-tar -xzf zoc-0.1.0-linux-amd64.tar.gz
-sh install.sh zoc-0.1.0-linux-amd64.tar.gz
+tar -xzf zoc-0.1.1-linux-amd64.tar.gz
+sh install.sh zoc-0.1.1-linux-amd64.tar.gz
 
 # Or RPM
-sudo dnf install ./zoc-0.1.0-1.x86_64.rpm
+sudo dnf install ./zoc-0.1.1-1.x86_64.rpm
 ```
 
 RPM installs update through DNF. Only archive installs can use MyGo's signed in-app updater, and only when the updater key pair is provisioned. See [Upstream sync](docs/UPSTREAM_SYNC.md).

@@ -16,7 +16,7 @@ These are measured baselines, not targets. The first baseline is the official We
 | OpenCode | `e4606463e7d18fd126ecfac3ec04602f1e44814b` (`dev`) |
 | Scenario | Official Web UI home screen, one fixture server, SSE open, no real session |
 | Method | `scripts/container.sh ./scripts/perf.sh`; process tree sampled every 2 s |
-| Raw 10-minute summary | `docs/performance-10min.json` |
+| Raw 10-minute summary | `docs/performance-10min.json` (0.1.0 build, upstream `97455cb`) |
 
 ## Package and installed footprint
 
@@ -24,8 +24,8 @@ These are measured baselines, not targets. The first baseline is the official We
 |---|---|
 | `zoc` executable | 110,461,191 bytes (~105.3 MiB) |
 | Embedded Web UI (`frontend/`) | 94,126,200 bytes (~89.8 MiB, including the gate manifest) |
-| RPM | 40,335,501 bytes (~38.5 MiB) |
-| Archive (`tar.gz`) | 40,329,515 bytes (~38.5 MiB) |
+| RPM (0.1.1) | 40,335,640 bytes (~38.5 MiB) |
+| Archive (`tar.gz`, 0.1.1) | 40,329,750 bytes (~38.5 MiB) |
 | Installed payload | executable + icon + desktop entry; no Node/Chromium/Electron |
 
 The binary is large because the official Web UI, its lazy Office/WASM assets, fonts and terminal emulator are embedded. Compression reduces the distributed artifact to about 38.5 MiB.
