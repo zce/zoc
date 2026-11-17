@@ -50,9 +50,10 @@ func main() {
 		log.Fatal(err)
 	}
 	service := &desktop.Service{
-		Version:  version,
-		WindowID: "main",
-		Policy:   policy,
+		Version:       version,
+		WindowID:      "main",
+		Policy:        policy,
+		ReduceEffects: reduceEffectsDefault(),
 	}
 	inbox := native.NewInbox(service)
 	service.OpenInbox = inbox.Open
@@ -121,6 +122,9 @@ func main() {
 				os.Getenv("GDK_BACKEND"),
 				os.Getenv("LIBGL_ALWAYS_SOFTWARE"),
 			)
+		}
+		if service.ReduceEffects {
+			log.Printf("zoc: reduced compositing effects (ZOC_REDUCE_EFFECTS=0 restores animations)")
 		}
 		if err := policy.Replace(store.Origins()); err != nil {
 			log.Fatal(err)
@@ -253,6 +257,22 @@ func dmabufRenderer() mygo.DMABUFRenderer {
 		return mygo.DMABUFRendererOn
 	}
 	return mygo.DMABUFRendererAuto
+}
+
+// reduceEffectsDefault keeps WebKitGTK's accelerated compositing workload
+// down on the Wayland/NVIDIA combination where its backdrop filters and
+// continuous CSS animations are expensive. The page is still rendered on
+// the GPU; only the effects that trigger repeated compositing are removed.
+// ZOC_REDUCE_EFFECTS=0 restores full effects, and =1 forces the reduced mode
+// on other hosts.
+func reduceEffectsDefault() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("ZOC_REDUCE_EFFECTS"))) {
+	case "1", "true", "on", "reduced":
+		return true
+	case "0", "false", "off", "full":
+		return false
+	}
+	return runtime.GOOS == "linux" && os.Getenv("WAYLAND_DISPLAY") != "" && nvidiaDriverMajor() >= 600
 }
 
 // nvidiaDriverMajor returns the major version in /proc/driver/nvidia/version,

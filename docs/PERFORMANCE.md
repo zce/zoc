@@ -22,6 +22,8 @@ These are measured baselines, not targets. The first baseline is the official We
 
 ZOC asks MyGo for its DMA-BUF renderer before `Run`. On Wayland it enables the renderer for Intel/AMD Mesa and for NVIDIA 600-series drivers (verified with 620.70 and WebKitGTK 2.54); older NVIDIA drivers, virtual machines and containers keep the CPU renderer. `ZOC_DMABUF=on|off|auto` overrides the policy. The startup log reports either `dmabuf=enabled` or `dmabuf=disabled (CPU)`.
 
+On NVIDIA Wayland, ZOC also starts with reduced compositing effects: backdrop filters and continuous CSS animations are disabled because WebKitGTK's accelerated compositing is CPU-heavy there. The GPU/DMA-BUF path stays enabled; `ZOC_REDUCE_EFFECTS=0` restores full effects. This is a workaround for a WebKitGTK/NVIDIA interaction, not a claim that GPU rendering is slower in general.
+
 The measurements below were recorded before this change and with the renderer off (the container also forces `WEBKIT_DISABLE_DMABUF_RENDERER=1`). They do not describe a GPU-accelerated host and should not be used to judge scrolling on a real Fedora/GNOME/Wayland desktop. `WEBKIT_DISABLE_DMABUF_RENDERER=0` forces the renderer on for diagnosis; it can blank the window on drivers where MyGo's probe disables it.
 
 ## Package and installed footprint

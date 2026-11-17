@@ -48,6 +48,9 @@ type Service struct {
 	Store     *profiles.Store
 	Policy    *networkpolicy.Policy
 	OpenInbox func()
+	// ReduceEffects starts the page with backdrop filters and continuous
+	// animations disabled, for hosts where WebKitGTK compositing is expensive.
+	ReduceEffects bool
 
 	mu     sync.Mutex
 	main   *mygo.Window
@@ -175,7 +178,7 @@ func (s *Service) Bootstrap() Bootstrap {
 		Servers:       s.Store.List(),
 		Zoom:          zoom,
 		Fullscreen:    s.IsFullscreen(),
-		ReduceEffects: os.Getenv("ZOC_REDUCE_EFFECTS") == "1",
+		ReduceEffects: s.ReduceEffects,
 		Info:          info,
 		Limits:        map[string]int64{"attachmentBytes": maxAttachmentBytes},
 	}

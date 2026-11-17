@@ -23,9 +23,11 @@ html[data-zoc-native-titlebar="1"] [data-tauri-drag-region] {
 }
 
 /*
- * ZOC_REDUCE_EFFECTS=1 is a diagnostic mode for hosts where WebKitGTK's
- * CSS transitions, animations and backdrop filters make hover and scroll
- * feel delayed. It is not enabled by default.
+ * Reduced compositing mode: backdrop filters and continuous CSS
+ * transitions/animations make WebKitGTK's accelerated compositing
+ * CPU-heavy on NVIDIA Wayland, so ZOC selects this mode there by default.
+ * ZOC_REDUCE_EFFECTS=0 restores full effects; =1 forces this mode on
+ * other hosts.
  */
 html[data-zoc-effects="reduced"] *,
 html[data-zoc-effects="reduced"] *::before,

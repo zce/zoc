@@ -67,7 +67,8 @@ Run this on Fedora GNOME/Wayland with a real OpenCode Server. Record the app ver
 - [ ] Compose in the terminal as well; candidate placement stays stable around the terminal editor.
 - [ ] With `ZOC_IME_CALC=1`, record whether the caret workaround aligns the popup without jitter; it is not the default.
 - [ ] The startup log reports `dmabuf=enabled` on Wayland with Intel/AMD Mesa or NVIDIA 600-series, or `dmabuf=disabled (CPU)` on older NVIDIA, a VM or a container.
-- [ ] Scroll a long transcript; record smoothness with the active renderer. If it is disabled, record the GPU/session and try `ZOC_DMABUF=on` (or `WEBKIT_DISABLE_DMABUF_RENDERER=0`) only for diagnosis.
+- [ ] On NVIDIA Wayland, the log reports reduced compositing effects. The UI remains usable and scrolling is smoother; `ZOC_REDUCE_EFFECTS=0` restores animations for comparison.
+- [ ] Scroll a long transcript; record smoothness with the active renderer and effects mode. If the renderer is disabled, record the GPU/session and try `ZOC_DMABUF=on` (or `WEBKIT_DISABLE_DMABUF_RENDERER=0`) only for diagnosis.
 
 ## Native inbox
 
