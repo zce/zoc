@@ -1,0 +1,31 @@
+{
+  "repository": "anomalyco/opencode",
+  "branch": "dev",
+  "commit": "e4606463e7d18fd126ecfac3ec04602f1e44814b",
+  "package": "@opencode/app",
+  "packageVersion": "2.3.0",
+  "mygoVersion": "0.9.2",
+  "goVersion": "1.27.4",
+  "bunVersion": "1.4.4",
+  "adapterPatches": [
+    {
+      "id": "zoc-host-adapter",
+      "file": "upstream/patches/0001-zoc-host-adapter.patch",
+      "sha256": "f3be6543dc95782705585b95b6f83dbb2cf702b5fae4a0660ad424b9ac6b1e7c"
+    }
+  ],
+  "adapterSources": [
+    {
+      "file": "adapter/src/platform.ts",
+      "sha256": "1048a31d3de74448e2da4fd09bc8b7ae28eb9656b322cc1b2abd53a1e550956e"
+    },
+    {
+      "file": "adapter/vite.zoc.config.ts",
+      "sha256": "1af6948977859b4e317517b0ae4ee05eea8804f212eaa8272c6be9d7c1a405d9"
+    },
+    {
+      "file": "adapter/src/storage.ts",
+      "sha256": "556d5734e25d4aa0c88a9fb93456c6613ce93f17f8cc1361012132bb89782fa3"
+    }
+  ]
+}

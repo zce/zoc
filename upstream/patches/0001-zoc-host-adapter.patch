@@ -1,0 +1,56 @@
+diff --git a/packages/app/src/entry.tsx b/packages/app/src/entry.tsx
+index 969f506..d005b6d 100644
+--- a/packages/app/src/entry.tsx
++++ b/packages/app/src/entry.tsx
+@@ -6,7 +6,7 @@ import { render } from "solid-js/web"
+ import { AppBaseProviders, AppInterface } from "@/app"
+ import { loadInitialLocale } from "@/runtime/i18n/language"
+ import { PlatformProvider } from "@/runtime/platform/platform"
+-import { createWebPlatform } from "@/runtime/platform/web"
++import { createZocPlatform } from "@/zoc/platform"
+ import { isStandalone, PwaRoutePersistence, restorePwaRoute } from "@/runtime/platform/pwa"
+ import { KeyboardInsets } from "@/runtime/platform/keyboard"
+ import en from "@/runtime/i18n/en"
+@@ -50,11 +50,7 @@ const clearAuthToken = () => {
+ }
+ 
+ // package.json carries the last stable version on every channel, so the server's build passes its own release.
+-const web = createWebPlatform(import.meta.env.VITE_OPENCODE_VERSION ?? pkg.version)
+-
+-if (import.meta.env.PROD && "serviceWorker" in navigator) {
+-  window.addEventListener("load", () => void navigator.serviceWorker.register("/sw.js"), { once: true })
+-}
++const web = await createZocPlatform(import.meta.env.VITE_OPENCODE_VERSION ?? pkg.version)
+ 
+ if (import.meta.env.VITE_SENTRY_DSN) {
+   init({
+@@ -103,7 +99,7 @@ if (root instanceof HTMLElement && root.dataset.opencodeMounted === undefined) {
+           <AppBaseProviders locale={locale}>
+             <AppInterface
+               canonicalLocalServer={server ? ServerConnection.key(server) : undefined}
+-              servers={server ? [server] : []}
++              servers={web.servers.length > 0 ? web.servers : server ? [server] : []}
+             >
+               <KeyboardInsets />
+               {standalone && <PwaRoutePersistence />}
+diff --git a/packages/gui-plugins/src/terminal/terminal.tsx b/packages/gui-plugins/src/terminal/terminal.tsx
+index 9a4bf61..1a6de58 100644
+--- a/packages/gui-plugins/src/terminal/terminal.tsx
++++ b/packages/gui-plugins/src/terminal/terminal.tsx
+@@ -4,6 +4,7 @@ import { resolveThemeVariant } from "@opencode/ui/theme/resolve"
+ import { resolveThemeVariantV2 } from "@opencode/ui/theme/v2/resolve"
+ import type { HexColor, ResolvedV2Theme } from "@opencode/ui/theme/types"
+ import { createPersistentPtyClient } from "@opencode/client/solid"
++import { openZocSocket } from "@/zoc/platform"
+ import type { FitAddon, Terminal as Term } from "ghostty-web"
+ import { createMemo, createSignal, onCleanup, onMount, Show, untrack } from "solid-js"
+ import { createKeyed, usePlugin } from "@opencode/plugin/gui"
+@@ -546,7 +547,7 @@ export const Terminal = (props: TerminalProps) => {
+     if (signal.aborted) return
+     connection.restore({ size: snapshot.info.size, checkpoint: snapshot.checkpoint })
+ 
+-    const socket = await createPersistentPtyClient(server.client, { url: server.url }).connect({
++    const socket = await createPersistentPtyClient(server.client, { url: server.url, openSocket: openZocSocket }).connect({
+       ptyID,
+       cursor: snapshot.info.output.tail,
+       attachmentID,

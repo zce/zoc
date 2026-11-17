@@ -1,0 +1,408 @@
+name: Upstream sync and release
+
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Exact anomalyco/opencode commit SHA (40 hex). Empty resolves dev."
+        required: false
+      publish:
+        description: "Publish a release after all gates pass"
+        type: boolean
+        default: true
+      force:
+        description: "Publish a ZOC patch even when the upstream SHA is unchanged"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Build and verify upstream artifact
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      changed: ${{ steps.previous.outputs.changed }}
+      version: ${{ steps.previous.outputs.version }}
+      sha: ${{ steps.upstream.outputs.sha }}
+      signed: ${{ steps.signing.outputs.signed }}
+      frontend_sha: ${{ steps.artifact.outputs.frontend_sha }}
+      package: ${{ steps.artifact.outputs.package }}
+      package_version: ${{ steps.artifact.outputs.package_version }}
+      previous_sha: ${{ steps.previous.outputs.previous_sha }}
+      previous_tag: ${{ steps.previous.outputs.latest_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install Podman
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman uidmap slirp4netns jq
+          podman --version
+
+      - name: Resolve upstream SHA
+        id: upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_SHA: ${{ github.event.inputs.sha }}
+        run: |
+          sha="${INPUT_SHA}"
+          if [[ -z "${sha}" ]]; then
+            sha="$(git ls-remote https://github.com/anomalyco/opencode.git refs/heads/dev | cut -f1)"
+          fi
+          if [[ ! "${sha}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "error: not a full upstream SHA: ${sha}" >&2
+            exit 1
+          fi
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "Resolved anomalyco/opencode dev: ${sha}"
+
+      - name: Compare with last published release
+        id: previous
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_SHA: ${{ steps.upstream.outputs.sha }}
+          FORCE: ${{ github.event.inputs.force }}
+        run: |
+          gh release list --limit 100 --json tagName,isDraft,isPrerelease \
+            --jq '.[] | select(.isDraft == false and .isPrerelease == false) | .tagName' \
+            | grep -E '^zoc-v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V > /tmp/release-tags.txt || true
+          latest="$(tail -n 1 /tmp/release-tags.txt || true)"
+          version="0.1.0"
+          previous_sha=""
+          previous_manifest=false
+          if [[ -n "${latest}" ]]; then
+            previous_version="${latest#zoc-v}"
+            version="$(python3 scripts/next-version.py "${previous_version}")"
+            mkdir -p /tmp/last-release
+            if gh release download "${latest}" --pattern upstream.json --dir /tmp/last-release --clobber 2>/dev/null; then
+              previous_sha="$(jq -r '.upstreamCommit // ""' /tmp/last-release/upstream.json)"
+            fi
+            if gh release view "${latest}" --json assets --jq '.assets[].name' | grep -qE '^update-.*\.json$'; then
+              previous_manifest=true
+            fi
+          fi
+          # Never reuse a tag: pick the first unused patch version.
+          while git rev-parse -q --verify "refs/tags/zoc-v${version}" >/dev/null; do
+            version="$(python3 scripts/next-version.py "${version}")"
+          done
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "previous_sha=${previous_sha}" >> "$GITHUB_OUTPUT"
+          echo "latest_tag=${latest}" >> "$GITHUB_OUTPUT"
+          echo "previous_manifest=${previous_manifest}" >> "$GITHUB_OUTPUT"
+          echo "Previous upstream: ${previous_sha:-none}; next ZOC version: ${version}"
+          if [[ "${previous_sha}" == "${UPSTREAM_SHA}" && "${FORCE}" != "true" ]]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check signing continuity
+        id: signing
+        if: steps.previous.outputs.changed == 'true'
+        env:
+          ZOC_UPDATER_PUBLIC_KEY: ${{ vars.ZOC_UPDATER_PUBLIC_KEY }}
+          HAS_PRIVATE_KEY: ${{ secrets.MYGO_UPDATER_PRIVATE_KEY != '' }}
+        run: |
+          python3 scripts/signing-policy.py \
+            --previous /tmp/last-release/upstream.json \
+            --previous-has-manifest "${{ steps.previous.outputs.previous_manifest }}" \
+            --public-key "${ZOC_UPDATER_PUBLIC_KEY:-}" \
+            --has-private-key "${HAS_PRIVATE_KEY}" \
+            --out "$GITHUB_OUTPUT"
+
+      - name: Nothing to do
+        if: steps.previous.outputs.changed != 'true'
+        run: echo "Upstream dev is unchanged at ${{ steps.upstream.outputs.sha }}; no release."
+
+      - name: Build pinned toolchain image
+        if: steps.previous.outputs.changed == 'true'
+        run: podman build --pull=missing -f Containerfile -t localhost/zoc-build:2026-11-16 .
+
+      - name: Run gates
+        if: steps.previous.outputs.changed == 'true'
+        env:
+          ZOC_VERSION: ${{ steps.previous.outputs.version }}
+          ZOC_UPSTREAM_COMMIT: ${{ steps.upstream.outputs.sha }}
+        run: ./scripts/container.sh ./scripts/check.sh
+
+      - name: Build unsigned Linux artifact
+        if: steps.previous.outputs.changed == 'true'
+        env:
+          ZOC_VERSION: ${{ steps.previous.outputs.version }}
+          ZOC_UPSTREAM_COMMIT: ${{ steps.upstream.outputs.sha }}
+        run: ./scripts/container.sh ./scripts/build.sh
+
+      - name: WebKitGTK + Native UI smoke
+        if: steps.previous.outputs.changed == 'true'
+        env:
+          ZOC_VERSION: ${{ steps.previous.outputs.version }}
+          ZOC_SMOKE_INBOX: "1"
+        run: ./scripts/container.sh ./scripts/smoke.sh
+
+      - name: Stage verified inputs
+        id: artifact
+        if: steps.previous.outputs.changed == 'true'
+        run: |
+          source scripts/mygo-cli.env
+          test "$(jq -r '.mygoVersion' upstream/upstream.json)" = "${MYGO_CLI_VERSION}"
+          mygo_bin="node_modules/@egoist/mygo-cli-linux-x64/bin/mygo"
+          test -x "${mygo_bin}"
+          echo "${MYGO_CLI_LINUX_X64_SHA256}  ${mygo_bin}" | sha256sum -c -
+          install -m 0755 "${mygo_bin}" build/zoc-mygo
+          frontend_sha="$(jq -r '.frontendSha256' build/linux-amd64/upstream.json)"
+          test -n "${frontend_sha}"
+          test "$(jq -r '.updateSigning' build/linux-amd64/upstream.json)" = "not-provisioned"
+          test ! -e build/linux-amd64/update-linux-amd64.json
+          echo "frontend_sha=${frontend_sha}" >> "$GITHUB_OUTPUT"
+          echo "package=$(jq -r '.upstreamPackage' build/linux-amd64/upstream.json)" >> "$GITHUB_OUTPUT"
+          echo "package_version=$(jq -r '.upstreamPackageVersion' build/linux-amd64/upstream.json)" >> "$GITHUB_OUTPUT"
+          tar -czf build/zoc-frontend.tar.gz -C frontend .
+          tar -czf build/zoc-unsigned.tar.gz -C build linux-amd64 upstream.json
+
+      - name: Upload verified frontend for the signing job
+        if: steps.previous.outputs.changed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: zoc-frontend
+          path: build/zoc-frontend.tar.gz
+          retention-days: 2
+
+      - name: Upload pinned signing toolchain
+        if: steps.previous.outputs.changed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: zoc-signing-toolchain
+          path: build/zoc-mygo
+          retention-days: 2
+
+      - name: Upload unsigned artifact
+        if: steps.previous.outputs.changed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: zoc-unsigned
+          path: |
+            build/zoc-unsigned.tar.gz
+            .cache/smoke/smoke-inbox.png
+          retention-days: 3
+
+      - name: Dry-run summary
+        if: steps.previous.outputs.changed == 'true' && steps.signing.outputs.signed != 'true' && github.event.inputs.publish != 'true' && github.event_name != 'schedule'
+        run: |
+          echo "Gates passed; no release was published (publish=false)."
+          cat build/linux-amd64/upstream.json
+
+  sign:
+    name: Sign release artifact
+    needs: verify
+    if: needs.verify.result == 'success' && needs.verify.outputs.changed == 'true' && needs.verify.outputs.signed == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install Podman
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman uidmap slirp4netns jq
+          podman --version
+
+      - name: Download verified frontend
+        uses: actions/download-artifact@v4
+        with:
+          name: zoc-frontend
+          path: artifact
+
+      - name: Download pinned signing toolchain
+        uses: actions/download-artifact@v4
+        with:
+          name: zoc-signing-toolchain
+          path: artifact
+
+      - name: Stage trusted signing tree
+        run: |
+          rm -rf /tmp/zoc-sign
+          mkdir -p /tmp/zoc-sign
+          git archive HEAD | tar -x -C /tmp/zoc-sign
+          if tar -tzf artifact/zoc-frontend.tar.gz | grep -Eq '(^/|(^|/)\.\.(/|$))'; then
+            echo "error: unsafe path in frontend archive" >&2
+            exit 1
+          fi
+          if tar -tvzf artifact/zoc-frontend.tar.gz | awk '{print substr($1,1,1)}' | grep -qvE '^[-d]$'; then
+            echo "error: frontend archive contains unsupported entry types" >&2
+            exit 1
+          fi
+          mkdir -p /tmp/zoc-sign/frontend
+          tar -xzf artifact/zoc-frontend.tar.gz -C /tmp/zoc-sign/frontend
+          source /tmp/zoc-sign/scripts/mygo-cli.env
+          echo "${MYGO_CLI_LINUX_X64_SHA256}  artifact/zoc-mygo" | sha256sum -c -
+          install -m 0755 artifact/zoc-mygo /tmp/zoc-sign/mygo
+          chmod +x /tmp/zoc-sign/scripts/*.sh
+          test -x /tmp/zoc-sign/scripts/container.sh
+
+      - name: Build pinned toolchain image
+        run: podman build --pull=missing -f Containerfile -t localhost/zoc-build:2026-11-16 .
+
+      - name: Build and sign without untrusted preparation
+        env:
+          ZOC_VERSION: ${{ needs.verify.outputs.version }}
+          ZOC_UPSTREAM_COMMIT: ${{ needs.verify.outputs.sha }}
+          ZOC_FRONTEND_SHA: ${{ needs.verify.outputs.frontend_sha }}
+          ZOC_UPSTREAM_PACKAGE: ${{ needs.verify.outputs.package }}
+          ZOC_UPSTREAM_PACKAGE_VERSION: ${{ needs.verify.outputs.package_version }}
+          ZOC_UPDATER_PUBLIC_KEY: ${{ vars.ZOC_UPDATER_PUBLIC_KEY }}
+          MYGO_UPDATER_PRIVATE_KEY: ${{ secrets.MYGO_UPDATER_PRIVATE_KEY }}
+        run: /tmp/zoc-sign/scripts/container.sh ./scripts/build-signed.sh
+
+      - name: Stage signed artifact
+        run: |
+          rm -rf build
+          mkdir -p build
+          cp -a /tmp/zoc-sign/build/linux-amd64 build/
+          cp /tmp/zoc-sign/build/upstream.json build/upstream.json
+          tar -czf build/zoc-signed.tar.gz -C build linux-amd64 upstream.json
+
+      - name: Upload signed artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zoc-signed
+          path: build/zoc-signed.tar.gz
+          retention-days: 3
+
+      - name: Dry-run summary
+        if: github.event.inputs.publish != 'true' && github.event_name != 'schedule'
+        run: |
+          echo "Signed gates passed; no release was published (publish=false)."
+          cat build/linux-amd64/upstream.json
+
+  publish:
+    name: Verify and publish release
+    needs: [verify, sign]
+    if: >-
+      always() &&
+      needs.verify.result == 'success' &&
+      needs.verify.outputs.changed == 'true' &&
+      ((needs.verify.outputs.signed == 'true' && needs.sign.result == 'success') ||
+       (needs.verify.outputs.signed != 'true' && needs.sign.result == 'skipped')) &&
+      (github.event.inputs.publish == 'true' || github.event_name == 'schedule')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install Podman
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman uidmap slirp4netns jq
+          podman --version
+
+      - name: Download signed artifact
+        if: needs.verify.outputs.signed == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: zoc-signed
+          path: artifact
+
+      - name: Download unsigned artifact
+        if: needs.verify.outputs.signed != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: zoc-unsigned
+          path: artifact
+
+      - name: Restore release artifact
+        run: |
+          mkdir -p build
+          if [[ "${{ needs.verify.outputs.signed }}" == "true" ]]; then
+            archive=artifact/zoc-signed.tar.gz
+          else
+            archive=artifact/zoc-unsigned.tar.gz
+          fi
+          if tar -tzf "${archive}" | grep -Eq '(^/|(^|/)\.\.(/|$))'; then
+            echo "error: unsafe path in release archive" >&2
+            exit 1
+          fi
+          tar -xzf "${archive}" -C build
+          (cd build/linux-amd64 && sha256sum -c SHA256SUMS)
+
+      - name: Build pinned toolchain image
+        run: podman build --pull=missing -f Containerfile -t localhost/zoc-build:2026-11-16 .
+
+      - name: WebKitGTK + Native UI smoke
+        env:
+          ZOC_VERSION: ${{ needs.verify.outputs.version }}
+          ZOC_SMOKE_INBOX: "1"
+        run: ./scripts/container.sh ./scripts/smoke.sh
+
+      - name: Enforce signed channel state
+        env:
+          SIGNED: ${{ needs.verify.outputs.signed }}
+        run: |
+          metadata="build/linux-amd64/upstream.json"
+          if [[ "${SIGNED}" == "true" ]]; then
+            jq -e '.updateSigning == "provisioned" and ((.updaterPublicKey // "") | length > 0)' "${metadata}" >/dev/null
+            test -f build/linux-amd64/update-linux-amd64.json
+            echo "Signed update metadata present."
+          else
+            jq -e '.updateSigning == "not-provisioned" and ((.updaterPublicKey // "") | length == 0)' "${metadata}" >/dev/null
+            if compgen -G 'build/linux-amd64/update-*.json' >/dev/null; then
+              echo "error: unsigned channel contains an update manifest" >&2
+              exit 1
+            fi
+            echo "Unsigned channel: no updater keys or manifests."
+          fi
+
+      - name: Generate release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ZOC_VERSION: ${{ needs.verify.outputs.version }}
+          UPSTREAM_SHA: ${{ needs.verify.outputs.sha }}
+          PREVIOUS_SHA: ${{ needs.verify.outputs.previous_sha }}
+          PREVIOUS_TAG: ${{ needs.verify.outputs.previous_tag }}
+        run: ./scripts/release-notes.sh > /tmp/release-notes.md
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.verify.outputs.version }}
+          UPSTREAM_SHA: ${{ needs.verify.outputs.sha }}
+        run: |
+          tag="zoc-v${VERSION}"
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" >/dev/null 2>&1; then
+            echo "error: tag ${tag} already exists" >&2
+            exit 1
+          fi
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+            -f ref="refs/tags/${tag}" -f sha="$(git rev-parse HEAD)" >/dev/null
+          mapfile -t assets < <(find build/linux-amd64 -maxdepth 1 -type f ! -name zoc ! -name .mygo-files -printf '%p\n' | sort)
+          gh release create "${tag}" "${assets[@]}" \
+            --title "ZOC ${VERSION}" \
+            --notes-file /tmp/release-notes.md \
+            --verify-tag
+          echo "Published ${tag}"
