@@ -71,14 +71,16 @@ def main() -> int:
     if "gh api" not in publish:
         errors.append("publish job does not create the tag through the scoped token")
 
-    policy = verify.find("Check signing continuity")
-    build = verify.find("Run gates")
-    if policy < 0 or build < 0:
+    continuity = step_blocks(verify).get("Check signing continuity", "")
+    presence_only = "HAS_PRIVATE_KEY: ${{ secrets.MYGO_UPDATER_PRIVATE_KEY != '' }}"
+    if not continuity or "Run gates" not in verify:
         errors.append("verify job does not have the expected policy/build steps")
-    else:
-        for match in re.finditer("MYGO_UPDATER_PRIVATE_KEY", verify):
-            if not (policy < match.start() < build):
-                errors.append("verify job exposes the key outside the policy step")
+    if verify.count(presence_only) != 1 or presence_only not in continuity:
+        errors.append("verify must derive only a boolean key-presence flag")
+    if "MYGO_UPDATER_PRIVATE_KEY" in verify.replace(presence_only, "", 1):
+        errors.append("verify job exposes or references the private key beyond presence checking")
+    if '--has-private-key "${HAS_PRIVATE_KEY}"' not in continuity:
+        errors.append("signing policy must consume only the boolean key-presence flag")
 
     for name in ("package", "package_version", "frontend_sha"):
         if f"{name}:" not in verify.split("steps:", 1)[0]:

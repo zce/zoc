@@ -116,17 +116,13 @@ jobs:
         if: steps.previous.outputs.changed == 'true'
         env:
           ZOC_UPDATER_PUBLIC_KEY: ${{ vars.ZOC_UPDATER_PUBLIC_KEY }}
-          MYGO_UPDATER_PRIVATE_KEY: ${{ secrets.MYGO_UPDATER_PRIVATE_KEY }}
+          HAS_PRIVATE_KEY: ${{ secrets.MYGO_UPDATER_PRIVATE_KEY != '' }}
         run: |
-          has_private_key=false
-          if [[ -n "${MYGO_UPDATER_PRIVATE_KEY:-}" ]]; then
-            has_private_key=true
-          fi
           python3 scripts/signing-policy.py \
             --previous /tmp/last-release/upstream.json \
             --previous-has-manifest "${{ steps.previous.outputs.previous_manifest }}" \
             --public-key "${ZOC_UPDATER_PUBLIC_KEY:-}" \
-            --has-private-key "${has_private_key}" \
+            --has-private-key "${HAS_PRIVATE_KEY}" \
             --out "$GITHUB_OUTPUT"
 
       - name: Nothing to do
