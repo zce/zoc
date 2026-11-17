@@ -1,0 +1,161 @@
+/*
+ * ZOC hides GTK's title bar on Linux and lets the official Web UI draw it.
+ * The window controls are part of the page, in the title bar's trailing
+ * space, as a frameless Electron window does; the native menu bar stays
+ * hidden while its accelerators keep working.
+ */
+html[data-zoc-os="linux"] [data-slot="titlebar-v2"] {
+  padding-right: 138px !important;
+}
+
+html[data-zoc-fullscreen="true"] [data-slot="titlebar-v2"] {
+  padding-right: 0 !important;
+}
+
+/* Temporary native-titlebar comparison mode: no in-page window controls
+   and no reserved trailing space. */
+html[data-zoc-native-titlebar="1"] [data-slot="titlebar-v2"] {
+  padding-right: 0 !important;
+}
+
+html[data-zoc-native-titlebar="1"] [data-tauri-drag-region] {
+  --app-region: no-drag;
+}
+
+/*
+ * ZOC_REDUCE_EFFECTS=1 is a diagnostic mode for hosts where WebKitGTK's
+ * CSS transitions, animations and backdrop filters make hover and scroll
+ * feel delayed. It is not enabled by default.
+ */
+html[data-zoc-effects="reduced"] *,
+html[data-zoc-effects="reduced"] *::before,
+html[data-zoc-effects="reduced"] *::after {
+  transition-duration: 0.01ms !important;
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  scroll-behavior: auto !important;
+}
+
+html[data-zoc-effects="reduced"] * {
+  backdrop-filter: none !important;
+}
+
+/*
+ * MyGo recognises the --app-region custom property, while the upstream
+ * title bar is marked for Tauri with the plain app-region property. Mirror
+ * those marks so the title bar moves the window and its controls stay
+ * clickable.
+ */
+html[data-zoc-os="linux"] [data-tauri-drag-region] {
+  --app-region: drag;
+}
+
+html[data-zoc-os="linux"] [data-tauri-drag-region]
+  :is(button, a, input, textarea, select, [role="button"], [role="menuitem"], [contenteditable]) {
+  --app-region: no-drag;
+}
+
+html[data-zoc-os="linux"] [class~="[app-region:no-drag]"] {
+  --app-region: no-drag;
+}
+
+html[data-zoc-os="linux"] {
+  --zoc-window-radius: 8px;
+}
+
+/* A full-screen or maximized window has no title bar or window edge to
+   round. The native GTK decoration drops its radius in those states; the
+   page must drop it too, so content reaches the screen edges. !important
+   also overrides the inline ZOC_WINDOW_RADIUS value. */
+html[data-zoc-fullscreen="true"],
+html[data-zoc-maximized="true"] {
+  --zoc-window-radius: 0px !important;
+}
+
+/* Keep the page's own backgrounds and the fixed window controls inside the
+   same rounded silhouette as the GTK CSD. The webview background is
+   transparent so the rounded CSD corner is visible behind the clipped page. */
+html[data-zoc-os="linux"],
+html[data-zoc-os="linux"] body {
+  background: transparent !important;
+  border-radius: var(--zoc-window-radius);
+  overflow: hidden;
+}
+
+html[data-zoc-os="linux"] #root {
+  background: var(--v2-background-bg-deep, #fafafa);
+  border-radius: var(--zoc-window-radius);
+  overflow: hidden;
+}
+
+html[data-zoc-os="linux"] [data-slot="titlebar-v2"] {
+  border-top-left-radius: var(--zoc-window-radius);
+  border-top-right-radius: var(--zoc-window-radius);
+}
+
+html[data-zoc-native-titlebar="1"],
+html[data-zoc-native-titlebar="1"] body {
+  background: var(--v2-background-bg-deep, #fafafa) !important;
+}
+
+html[data-zoc-native-titlebar="1"] #root,
+html[data-zoc-native-titlebar="1"] [data-slot="titlebar-v2"] {
+  border-radius: 0;
+}
+
+#zoc-window-controls {
+  position: fixed;
+  top: 0;
+  right: 0;
+  z-index: 2147483647;
+  display: flex;
+  height: 36px;
+  align-items: stretch;
+  --app-region: no-drag;
+  user-select: none;
+  border-top-right-radius: var(--zoc-window-radius);
+  overflow: hidden;
+}
+
+#zoc-window-controls button[data-action="close"] {
+  border-top-right-radius: var(--zoc-window-radius);
+}
+
+#zoc-window-controls button {
+  display: grid;
+  width: 46px;
+  height: 36px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--v2-icon-icon-muted, #6b6b6b);
+  cursor: default;
+}
+
+#zoc-window-controls button:hover {
+  background: var(--v2-overlay-simple-overlay-hover, rgba(127, 127, 127, 0.18));
+  color: var(--v2-icon-icon-base, #1a1a1a);
+}
+
+#zoc-window-controls button:active {
+  background: var(--v2-overlay-simple-overlay-pressed, rgba(127, 127, 127, 0.28));
+}
+
+#zoc-window-controls button[data-action="close"]:hover,
+#zoc-window-controls button[data-action="close"]:active {
+  background: #e81123;
+  color: #fff;
+}
+
+#zoc-window-controls button:focus-visible {
+  outline: 2px solid var(--v2-border-border-focus, #478cff);
+  outline-offset: -2px;
+}
+
+#zoc-window-controls button svg {
+  display: block;
+  width: 10px;
+  height: 10px;
+}

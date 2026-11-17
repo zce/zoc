@@ -57,14 +57,15 @@ type Service struct {
 
 // Bootstrap is what the Web UI needs at document start.
 type Bootstrap struct {
-	Version    string             `json:"version"`
-	Platform   string             `json:"platform"`
-	WindowID   string             `json:"windowID"`
-	Servers    []profiles.Profile `json:"servers"`
-	Zoom       float64            `json:"zoom"`
-	Fullscreen bool               `json:"fullscreen"`
-	Info       map[string]string  `json:"info,omitempty"`
-	Limits     map[string]int64   `json:"limits,omitempty"`
+	Version       string             `json:"version"`
+	Platform      string             `json:"platform"`
+	WindowID      string             `json:"windowID"`
+	Servers       []profiles.Profile `json:"servers"`
+	Zoom          float64            `json:"zoom"`
+	Fullscreen    bool               `json:"fullscreen"`
+	ReduceEffects bool               `json:"reduceEffects,omitempty"`
+	Info          map[string]string  `json:"info,omitempty"`
+	Limits        map[string]int64   `json:"limits,omitempty"`
 }
 
 // ProfileInput is one user-entered server profile.
@@ -154,14 +155,29 @@ func (s *Service) MainWindow() *mygo.Window {
 // returns passwords or tokens.
 func (s *Service) Bootstrap() Bootstrap {
 	zoom := s.GetZoom()
+	info := map[string]string{}
+	for key, env := range map[string]string{
+		"imeOffsetX":     "ZOC_IME_OFFSET_X",
+		"imeOffsetY":     "ZOC_IME_OFFSET_Y",
+		"imeNative":      "ZOC_IME_NATIVE",
+		"imeCalc":        "ZOC_IME_CALC",
+		"nativeTitleBar": "ZOC_NATIVE_TITLEBAR",
+		"windowRadius":   "ZOC_WINDOW_RADIUS",
+	} {
+		if value := os.Getenv(env); value != "" {
+			info[key] = value
+		}
+	}
 	return Bootstrap{
-		Version:    s.Version,
-		Platform:   "desktop",
-		WindowID:   s.WindowID,
-		Servers:    s.Store.List(),
-		Zoom:       zoom,
-		Fullscreen: s.IsFullscreen(),
-		Limits:     map[string]int64{"attachmentBytes": maxAttachmentBytes},
+		Version:       s.Version,
+		Platform:      "desktop",
+		WindowID:      s.WindowID,
+		Servers:       s.Store.List(),
+		Zoom:          zoom,
+		Fullscreen:    s.IsFullscreen(),
+		ReduceEffects: os.Getenv("ZOC_REDUCE_EFFECTS") == "1",
+		Info:          info,
+		Limits:        map[string]int64{"attachmentBytes": maxAttachmentBytes},
 	}
 }
 
@@ -558,6 +574,61 @@ func (s *Service) FocusMain() {
 		w.Show()
 		w.Focus()
 	}
+}
+
+// MinimizeWindow minimizes the Web UI window.
+func (s *Service) MinimizeWindow() {
+	if w := s.MainWindow(); w != nil {
+		w.Minimize()
+	}
+}
+
+// ToggleMaximizeWindow maximizes the Web UI window, or restores it.
+func (s *Service) ToggleMaximizeWindow() {
+	if w := s.MainWindow(); w != nil {
+		w.ToggleMaximize()
+	}
+}
+
+// CloseWindow closes the Web UI window.
+func (s *Service) CloseWindow() {
+	if w := s.MainWindow(); w != nil {
+		w.Close()
+	}
+}
+
+// ReloadWindow reloads the Web UI page.
+func (s *Service) ReloadWindow() {
+	if w := s.MainWindow(); w != nil {
+		if page := w.Page(); page != nil {
+			page.Reload()
+		}
+	}
+}
+
+// ToggleDevTools opens or closes the Web UI's developer tools.
+func (s *Service) ToggleDevTools() {
+	if w := s.MainWindow(); w != nil {
+		if page := w.Page(); page != nil {
+			page.ToggleDevTools()
+		}
+	}
+}
+
+// IsMaximizedWindow reports whether the Web UI window is maximized.
+func (s *Service) IsMaximizedWindow() bool {
+	if w := s.MainWindow(); w != nil {
+		return w.IsMaximized()
+	}
+	return false
+}
+
+// NotifyImeCursor tells WebKitGTK where the focused editor's caret is, in
+// CSS pixels of the page viewport. WebKitGTK otherwise uses document
+// coordinates for the input method popup after a page scrolls, which puts
+// the candidate window outside the window.
+func (s *Service) NotifyImeCursor(x, y, width, height float64) {
+	notifyImeCursor(s.MainWindow(), x, y, width, height)
 }
 
 func friendlyProbeError(err error) string {

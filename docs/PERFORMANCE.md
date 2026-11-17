@@ -18,6 +18,12 @@ These are measured baselines, not targets. The first baseline is the official We
 | Method | `scripts/container.sh ./scripts/perf.sh`; process tree sampled every 2 s |
 | Raw 10-minute summary | `docs/performance-10min.json` (0.1.0 build, upstream `97455cb`) |
 
+## Rendering backend
+
+ZOC asks MyGo for its DMA-BUF renderer before `Run`. On Wayland it enables the renderer for Intel/AMD Mesa and for NVIDIA 600-series drivers (verified with 620.70 and WebKitGTK 2.54); older NVIDIA drivers, virtual machines and containers keep the CPU renderer. `ZOC_DMABUF=on|off|auto` overrides the policy. The startup log reports either `dmabuf=enabled` or `dmabuf=disabled (CPU)`.
+
+The measurements below were recorded before this change and with the renderer off (the container also forces `WEBKIT_DISABLE_DMABUF_RENDERER=1`). They do not describe a GPU-accelerated host and should not be used to judge scrolling on a real Fedora/GNOME/Wayland desktop. `WEBKIT_DISABLE_DMABUF_RENDERER=0` forces the renderer on for diagnosis; it can blank the window on drivers where MyGo's probe disables it.
+
 ## Package and installed footprint
 
 | Metric | Value |
@@ -59,6 +65,9 @@ WebKitGTK renders and networks in separate processes; the app process alone unde
 
 - A 10–30 minute **real session** with streaming, scrolling and tool output. The recorded run is a 10-minute stable idle home screen; `scripts/perf.sh` supports `ZOC_PERF_SECONDS=1800` for a longer run.
 - CPU of WebKit child processes. The recorded 0.13 s is the ZOC main process only; the full WebKit process tree CPU was not measured.
+- Scrolling on a real Wayland host with DMA-BUF enabled, and the same host with it disabled.
+- Window dragging, custom title-bar controls and double-click maximize on a real desktop.
+- IME candidate positioning while composing in a scrolled session.
 - A real OpenCode Server and real terminal latency.
 - Long transcript scroll smoothness.
 - Terminal startup/input/output latency.

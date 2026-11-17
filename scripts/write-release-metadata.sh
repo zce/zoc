@@ -45,7 +45,14 @@ import hashlib, json, pathlib
 items = []
 for p in sorted(pathlib.Path('upstream/patches').glob('*.patch')):
     items.append({"id": p.stem, "file": str(p), "sha256": hashlib.sha256(p.read_bytes()).hexdigest()})
-for p in [pathlib.Path('adapter/src/platform.ts'), pathlib.Path('adapter/src/storage.ts'), pathlib.Path('adapter/vite.zoc.config.ts')]:
+for p in [
+    pathlib.Path('adapter/src/platform.ts'),
+    pathlib.Path('adapter/src/storage.ts'),
+    pathlib.Path('adapter/src/ime.ts'),
+    pathlib.Path('adapter/src/window-controls.ts'),
+    pathlib.Path('adapter/src/zoc.css'),
+    pathlib.Path('adapter/vite.zoc.config.ts'),
+]:
     items.append({"id": p.stem + "-adapter", "file": str(p), "sha256": hashlib.sha256(p.read_bytes()).hexdigest()})
 print(json.dumps(items, separators=(',', ':')))
 PY

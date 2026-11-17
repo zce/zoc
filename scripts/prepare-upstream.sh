@@ -45,6 +45,9 @@ done
 mkdir -p "${UPSTREAM_DIR}/packages/app/src/zoc"
 install -m 0644 "${ROOT}/adapter/src/platform.ts" "${UPSTREAM_DIR}/packages/app/src/zoc/platform.ts"
 install -m 0644 "${ROOT}/adapter/src/storage.ts" "${UPSTREAM_DIR}/packages/app/src/zoc/storage.ts"
+install -m 0644 "${ROOT}/adapter/src/ime.ts" "${UPSTREAM_DIR}/packages/app/src/zoc/ime.ts"
+install -m 0644 "${ROOT}/adapter/src/window-controls.ts" "${UPSTREAM_DIR}/packages/app/src/zoc/window-controls.ts"
+install -m 0644 "${ROOT}/adapter/src/zoc.css" "${UPSTREAM_DIR}/packages/app/src/zoc/zoc.css"
 install -m 0644 "${ROOT}/adapter/vite.zoc.config.ts" "${UPSTREAM_DIR}/packages/app/vite.zoc.config.ts"
 
 echo "Upstream ready at ${COMMIT}"

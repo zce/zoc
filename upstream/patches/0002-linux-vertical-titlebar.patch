@@ -1,0 +1,13 @@
+diff --git a/packages/app/src/shell/titlebar/titlebar.tsx b/packages/app/src/shell/titlebar/titlebar.tsx
+index 097236c..16b5701 100644
+--- a/packages/app/src/shell/titlebar/titlebar.tsx
++++ b/packages/app/src/shell/titlebar/titlebar.tsx
+@@ -175,7 +175,7 @@ export function Titlebar(props: { verticalTabs?: { mount?: HTMLElement } }) {
+   const path = () => `${location.pathname}${location.search}${location.hash}`
+ 
+   const titlebarItems = useTitlebarItems()
+-  const hideVerticalTitlebar = createMemo(() => !!props.verticalTabs && !windows())
++  const hideVerticalTitlebar = createMemo(() => !!props.verticalTabs && !windows() && !linux())
+   const actionInSidebarHeader = () => !windows() && !macTrafficLights()
+ 
+   command.register(() => [

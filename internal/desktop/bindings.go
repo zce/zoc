@@ -72,6 +72,33 @@ func (b *Bindings) GetZoom() float64 { return b.s.GetZoom() }
 // SetZoom applies a zoom factor to the Web UI.
 func (b *Bindings) SetZoom(zoom float64) error { return b.s.SetZoom(zoom) }
 
+// MinimizeWindow minimizes the Web UI window.
+func (b *Bindings) MinimizeWindow() { b.s.MinimizeWindow() }
+
+// ToggleMaximizeWindow maximizes the Web UI window, or restores it.
+func (b *Bindings) ToggleMaximizeWindow() { b.s.ToggleMaximizeWindow() }
+
+// CloseWindow closes the Web UI window.
+func (b *Bindings) CloseWindow() { b.s.CloseWindow() }
+
+// ToggleFullscreen toggles the Web UI window's fullscreen state.
+func (b *Bindings) ToggleFullscreen() { b.s.ToggleFullscreen() }
+
+// ReloadWindow reloads the Web UI page.
+func (b *Bindings) ReloadWindow() { b.s.ReloadWindow() }
+
+// ToggleDevTools opens or closes the Web UI's developer tools.
+func (b *Bindings) ToggleDevTools() { b.s.ToggleDevTools() }
+
+// IsMaximizedWindow reports whether the Web UI window is maximized.
+func (b *Bindings) IsMaximizedWindow() bool { return b.s.IsMaximizedWindow() }
+
+// NotifyImeCursor positions WebKitGTK's input method popup at the focused
+// editor's caret, in CSS pixels of the page viewport.
+func (b *Bindings) NotifyImeCursor(x, y, width, height float64) {
+	b.s.NotifyImeCursor(x, y, width, height)
+}
+
 // StorageItems returns a storage namespace snapshot.
 func (b *Bindings) StorageItems(namespace string) (StorageSnapshot, error) {
 	return b.s.StorageItems(namespace)

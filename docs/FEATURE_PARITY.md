@@ -11,7 +11,7 @@ Status values:
 | Capability | Status | Evidence / notes |
 |---|---|---|
 | Replace Rust/GPUI | Done | No Rust sources, Cargo manifests or Cargo CI remain. |
-| Official Web UI embedded | Web | Built at pinned SHA; 3,082 files, 4 WASM assets; no service worker. |
+| Official Web UI embedded | Web | Built at pinned SHA; 3,085 files, 4 WASM assets; no service worker. |
 | Connect to existing server | Web + adapter | MyGo fetch through origin allowlist; fixture connection and a real local OpenCode Server (authenticated) verified. |
 | Authentication | Web + adapter | Basic password from Web UI; native inbox keeps ephemeral password in memory. Real server accepted the credential in a temporary app HOME. |
 | Reconnect / disconnect / switch | Web + adapter | Upstream registry and health machine; profiles seeded from ZOC. |
@@ -25,13 +25,17 @@ Status values:
 | Integrated terminal | Web + adapter | PTY `openSocket` patched to MyGo WebSocket; WebSocket open + `attached` frame verified in WebKit smoke. A real persistent PTY was created and showed a `zsh` prompt, but automated keystroke delivery into the terminal surface was not verified. |
 | Clipboard | Web + adapter | `Desktop.WriteClipboardText`/`ReadClipboardText` verified in WebKit smoke; image read implemented. |
 | Keyboard navigation/shortcuts | Web + native | Upstream Web UI; native menu accelerators and `Ctrl+Shift+I`. |
-| Chinese input composition | Web | Upstream Web UI + WebKitGTK; manual Fedora test required. |
-| Menus | Native | MyGo menu roles and custom items. |
+| Window chrome and controls | Native + Web | GTK's title bar is hidden on Linux; the official 36px title bar stays, with in-page minimize/maximize/close buttons, drag regions and double-click maximize. The Web UI's Window menu calls the same Go bindings. Fullscreen hides the controls and their reserved space; fullscreen and maximized windows have square corners. |
+| Native context menu | Native | WebKitGTK's menu is customized: navigation items removed; Open/Copy Link, Image and Media items added; editing, spelling and Inspect Element remain WebKitGTK's. |
+| IME caret positioning | Partial | Native WebKitGTK/IBus placement is the default: stable on the tested Fedora host but with a fixed offset. `ZOC_IME_CALC=1` enables the caret-rect workaround that calls `webkit_input_method_context_notify_cursor_area`; it can jitter and is not the default. The smoke exercises the binding; a correct fix needs upstream WebKitGTK/GTK work. |
+| Rendering backend | Native | MyGo DMA-BUF with a ZOC policy: GPU compositing on Intel/AMD Wayland and NVIDIA 600-series Wayland; CPU fallback on older NVIDIA, VMs and containers. `ZOC_DMABUF=on\|off\|auto` overrides. The startup log reports the choice. |
+| Chinese input composition | Web + adapter | Upstream Web UI, WebKitGTK and the caret workaround above; real Fedora IME verification required. |
+| Menus | Native + Web | MyGo menu roles, the native app menu and the Web UI's in-page menu; window, view and edit actions cross the Go bindings. |
 | Notifications | Native | MyGo Notification; click correlation event. No notification daemon in CI. |
 | File/directory pickers, save | Native | MyGo Dialog; not interaction-tested in headless CI. |
 | External links/local paths | Native | MyGo Shell with scheme checks. |
 | Deep links | Native | `zoc://add`, `zoc://open`; single-instance lock. |
-| Window state/fullscreen/zoom | Native | MyGo `StateKey`, fullscreen events, `SetZoomFactor`. |
+| Window state/fullscreen/zoom | Native | MyGo `StateKey`, fullscreen events, `SetZoomFactor`; the in-page controls and web menu use the same bindings. |
 | Persistent settings/drafts | Native | `Platform.storage` backed by `PathUserData/storage/*.json`; smoke verified storage round trip. Text drafts persist. Failed writes reject to the caller and leave the cache at the last confirmed value. |
 | Draft image blobs across restart | Partial | The upstream `platform.draftStore` blob hook is not implemented; image attachment bytes are not guaranteed across a restart. |
 | Server profiles | Native | JSON, mode 0600, URL only; no secrets. |
@@ -50,7 +54,7 @@ Status values:
 - `go test ./...` — transport policy, profiles, native snapshot, storage, session route.
 - TypeScript typecheck of the adapter against upstream types.
 - Frontend gates — root mount, assets, WASM, terminal chunk, no service worker.
-- WebKitGTK smoke — official UI mounts, bridge works, storage/clipboard round trip, `/api/info` and `/api/event` hit.
+- WebKitGTK smoke — official UI mounts, bridge works, storage/clipboard/IME cursor round trip, custom window controls present, `/api/info` and `/api/event` hit.
 - Reproducible packaging — RPM, archive, `upstream.json`, `SHA256SUMS`.
 
 ## Deliberate gaps
@@ -58,4 +62,6 @@ Status values:
 - No second SSE connection for Native UI; snapshots are on-demand.
 - Native state is not persisted as server data.
 - A ZOC profile and the official registry can show the same server; removing a ZOC profile does not remove the official registry copy.
+- **New Window** in the Web UI's app menu is a no-op; ZOC owns one main window.
+- WebKitGTK's spellcheck suggestions work, but the Electron app's Spellcheck toggle and language picker are not wired.
 - Real terminal, CJK composition, file pickers and notifications need user-side Fedora verification.

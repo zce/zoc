@@ -1,0 +1,12 @@
+--- a/packages/gui-plugins/src/terminal/terminal.tsx
++++ b/packages/gui-plugins/src/terminal/terminal.tsx
+@@ -482,6 +482,9 @@
+ 
+     const active = document.activeElement
+     t.open(container)
++    // ZOC: expose the terminal instance so the host can put the IME candidate
++    // window at the visible terminal cursor instead of the hidden textarea.
++    Object.assign(container, { __zocTerminal: t })
+     useTerminalUiBindings({
+       container,
+       term: t,

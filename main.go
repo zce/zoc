@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -34,6 +35,15 @@ func main() {
 	if raw := strings.TrimSpace(os.Getenv("ZOC_USER_DATA")); raw != "" {
 		mygo.App.SetPath(mygo.PathUserData, raw)
 	}
+
+	configureInputModule()
+
+	// Let WebKitGTK use its DMA-BUF renderer where the host can draw with
+	// it. MyGo keeps it off by default because it blanks windows on NVIDIA,
+	// in VMs and in containers; ZOC's policy enables it on the Wayland +
+	// recent NVIDIA combination verified here, and elsewhere leaves MyGo's
+	// auto probe to decide. ZOC_DMABUF=on|off|auto overrides the policy.
+	mygo.App.SetDMABUFRenderer(dmabufRenderer())
 
 	policy, err := networkpolicy.New()
 	if err != nil {
@@ -99,11 +109,24 @@ func main() {
 		if v := mygo.App.Version(); v != "" {
 			service.Version = v
 		}
+		if runtime.GOOS == "linux" {
+			dmabuf := "enabled"
+			if os.Getenv("WEBKIT_DISABLE_DMABUF_RENDERER") == "1" {
+				dmabuf = "disabled (CPU)"
+			}
+			log.Printf(
+				"zoc: dmabuf=%s session=%s gdk=%s software_gl=%s",
+				dmabuf,
+				os.Getenv("XDG_SESSION_TYPE"),
+				os.Getenv("GDK_BACKEND"),
+				os.Getenv("LIBGL_ALWAYS_SOFTWARE"),
+			)
+		}
 		if err := policy.Replace(store.Origins()); err != nil {
 			log.Fatal(err)
 		}
 
-		win := mygo.NewWindow(mygo.WindowOptions{
+		opts := mygo.WindowOptions{
 			Title:           "ZOC",
 			URL:             "/",
 			Width:           1280,
@@ -111,9 +134,26 @@ func main() {
 			MinWidth:        760,
 			MinHeight:       520,
 			StateKey:        "main",
-			BackgroundColor: "light-dark(#fafafa, #191515)",
-		})
+			BackgroundColor: "light-dark(transparent, transparent)",
+			// ZOC is a developer client; keep the Web Inspector available
+			// from View → Toggle Developer Tools for diagnosing the embedded
+			// official UI.
+			Page: mygo.PageOptions{DevTools: mygo.DevToolsEnabled},
+		}
+		if runtime.GOOS == "linux" && os.Getenv("ZOC_NATIVE_TITLEBAR") != "1" {
+			// The official Web UI draws its own 36px title bar. Hide GTK's
+			// title bar and its buttons; the page draws the window controls
+			// in the title bar's trailing space and calls the native
+			// minimize, maximize and close bindings.
+			opts.TitleBarStyle = mygo.TitleBarHidden
+			opts.TitleBarHeight = 36
+			opts.HideWindowButtons = true
+		}
+		win := mygo.NewWindow(opts)
 		service.SetMainWindow(win)
+		applyWindowChrome()
+		mygo.Theme.OnUpdated(applyWindowChrome)
+		service.InstallContextMenu(win)
 		menu := buildMenu(service)
 		if runtime.GOOS == "darwin" {
 			mygo.App.SetMenu(menu)
@@ -138,6 +178,102 @@ func main() {
 	}
 }
 
+// applyWindowChrome paints the GTK CSD background with the same color as
+// the Web UI. The webview is transparent so the CSD rounded corners show
+// through the page's clipped corners; without this the theme's default
+// window background appears as a gray corner around a dark page.
+//
+// Adwaita's GTK 3 theme rounds only the decoration's top corners
+// (`decoration { border-radius: 8px 8px 0 0 }`); GTK 4 apps, which the
+// desktop's native apps use, round all four. ZOC runs on GTK 3, so it
+// rounds the decoration and the window background itself, and keeps the
+// square shape the theme gives maximized, full-screen and tiled windows.
+func applyWindowChrome() {
+	background := "#fafafa"
+	if mygo.Theme.IsDark() {
+		background = "#191515"
+	}
+	radius := "8"
+	if value := strings.TrimSpace(os.Getenv("ZOC_WINDOW_RADIUS")); value != "" {
+		radius = value
+	}
+	// Round only normal windows: the theme already squares decorated
+	// popups and maximized, full-screen and tiled windows. Excluding those
+	// states here lets the theme's own rules win without !important, which
+	// GTK 3's CSS parser does not accept.
+	state := ":not(.popup):not(.tooltip):not(.maximized):not(.fullscreen)" +
+		":not(.tiled):not(.tiled-top):not(.tiled-right):not(.tiled-bottom):not(.tiled-left)"
+	css := fmt.Sprintf(
+		`window.csd, window.solid-csd { background-color: %[1]s; }
+window.csd%[2]s, window.solid-csd%[2]s { border-radius: %[3]spx; }
+window.csd%[2]s decoration, window.solid-csd%[2]s decoration { border-radius: %[3]spx; }`,
+		background,
+		state,
+		radius,
+	)
+	if err := mygo.Theme.SetGTKCSS(css); err != nil {
+		log.Printf("zoc: window background CSS: %v", err)
+	}
+}
+
+// configureInputModule uses IBus's GTK module when the session runs IBus
+// but GTK_IM_MODULE is unset. On Wayland the default text-input module can
+// place the first IBus candidate before WebKit's cursor area reaches the
+// panel; the IBus module follows the context sooner. An explicit
+// GTK_IM_MODULE always wins.
+func configureInputModule() {
+	if runtime.GOOS != "linux" || os.Getenv("GTK_IM_MODULE") != "" {
+		return
+	}
+	ibus := strings.Contains(os.Getenv("XMODIFIERS"), "@im=ibus") ||
+		strings.Contains(os.Getenv("QT_IM_MODULE"), "ibus")
+	if !ibus {
+		return
+	}
+	if err := os.Setenv("GTK_IM_MODULE", "ibus"); err == nil {
+		log.Printf("zoc: GTK_IM_MODULE=ibus for the IBus session")
+	}
+}
+
+// dmabufRenderer chooses WebKitGTK's renderer before App.Run. MyGo's auto
+// probe disables DMA-BUF on every NVIDIA host because older drivers blank
+// the window; the verified WebKitGTK 2.54 + NVIDIA 600-series combination
+// draws correctly and scrolls much faster with it. Other hosts keep MyGo's
+// safer probe.
+func dmabufRenderer() mygo.DMABUFRenderer {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("ZOC_DMABUF"))) {
+	case "on":
+		return mygo.DMABUFRendererOn
+	case "off":
+		return mygo.DMABUFRendererOff
+	case "auto":
+		return mygo.DMABUFRendererAuto
+	}
+	if runtime.GOOS == "linux" && os.Getenv("WAYLAND_DISPLAY") != "" && nvidiaDriverMajor() >= 600 {
+		return mygo.DMABUFRendererOn
+	}
+	return mygo.DMABUFRendererAuto
+}
+
+// nvidiaDriverMajor returns the major version in /proc/driver/nvidia/version,
+// or 0 when the NVIDIA driver is not loaded.
+func nvidiaDriverMajor() int {
+	data, err := os.ReadFile("/proc/driver/nvidia/version")
+	if err != nil {
+		return 0
+	}
+	for _, field := range strings.Fields(string(data)) {
+		major, _, ok := strings.Cut(field, ".")
+		if !ok {
+			continue
+		}
+		if n, err := strconv.Atoi(major); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 0
+}
+
 // installSmokeProbe lets CI verify that the embedded official Web UI
 // actually mounted under WebKitGTK, not merely that the process started. It
 // writes a JSON result and quits. It is inert unless ZOC_SMOKE_OUT is set.
@@ -153,6 +289,7 @@ await window.mygo.call("Desktop.StorageUpdate", "smoke", { key: "value" }, [])
 const storage = await window.mygo.call("Desktop.StorageItems", "smoke")
 await window.mygo.call("Desktop.WriteClipboardText", "zoc-smoke")
 const clipboard = await window.mygo.call("Desktop.ReadClipboardText")
+await window.mygo.call("Desktop.NotifyImeCursor", 8, 8, 1, 16)
 const wsURL = new URL(bootstrap.servers[0].url)
 wsURL.protocol = wsURL.protocol === "https:" ? "wss:" : "ws:"
 wsURL.pathname = "/api/experimental/persistent-pty/pty-fixture/connect"
@@ -175,6 +312,8 @@ return JSON.stringify({
   root: !!document.querySelector("#root"),
   mounted: !!document.querySelector("#root > *"),
   mygo: typeof window.mygo === "object",
+  zocOs: document.documentElement.dataset.zocOs ?? "",
+  windowControls: !!document.querySelector("#zoc-window-controls"),
   version: bootstrap.version,
   servers: bootstrap.servers.length,
   storage: storage.items.key ?? null,
@@ -206,6 +345,9 @@ return JSON.stringify({
 					"rssKb":     rss,
 					"hwmKb":     hwm,
 				}
+				if png, err := win.CapturePage(); err == nil {
+					_ = os.WriteFile(strings.TrimSuffix(out, ".json")+"-page.png", png, 0o644)
+				}
 				if err != nil {
 					result["error"] = err.Error()
 				} else {
@@ -213,6 +355,8 @@ return JSON.stringify({
 					if s, ok := raw.(string); ok {
 						result["ok"] = strings.Contains(s, `"mounted":true`) &&
 							strings.Contains(s, `"mygo":true`) &&
+							strings.Contains(s, `"zocOs":"linux"`) &&
+							strings.Contains(s, `"windowControls":true`) &&
 							strings.Contains(s, `"storage":"value"`) &&
 							strings.Contains(s, `"clipboard":"zoc-smoke"`) &&
 							strings.Contains(s, `"bash":true`) &&

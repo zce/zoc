@@ -1,6 +1,6 @@
 import type { Platform } from "@/runtime/platform/platform"
 import type { ServerConnection } from "@/runtime/server/registry"
-import type { DesktopZoomLevel } from "@/shell/commands/desktop-menu"
+import { nextDesktopZoomLevel, type DesktopZoomLevel } from "@/shell/commands/desktop-menu"
 import { isMyGo, currentWindow } from "mygo-runtime"
 import { fetch as mygoFetch } from "@mygo-plugins/fetch"
 import { WebSocket as MyGoWebSocket } from "@mygo-plugins/websocket"
@@ -8,7 +8,10 @@ import type { AsyncStorage } from "@solid-primitives/storage"
 import { createSignal } from "solid-js"
 import { Desktop, events } from "./mygo"
 import type { AttachmentOptions, Bootstrap, Profile } from "./mygo"
+import { installImeCursorTracking, refreshImeCursor } from "./ime"
+import { installWindowControls } from "./window-controls"
 import { createGoStorage } from "./storage"
+import "./zoc.css"
 
 type ServerSeed = Extract<ServerConnection.Any, { type: "http" }>
 
@@ -167,6 +170,8 @@ function browserPlatform(version: string): ZocRuntime {
 export async function createZocPlatform(version: string): Promise<ZocRuntime> {
   if (!isMyGo()) return browserPlatform(version)
 
+  document.documentElement.dataset.zocOs = "linux"
+
   let bootstrap: Bootstrap
   try {
     bootstrap = await Desktop.bootstrap()
@@ -175,6 +180,16 @@ export async function createZocPlatform(version: string): Promise<ZocRuntime> {
     return browserPlatform(version)
   }
   seedOrigins(bootstrap.servers)
+  if (bootstrap.reduceEffects) document.documentElement.dataset.zocEffects = "reduced"
+  if (bootstrap.info?.windowRadius) {
+    document.documentElement.style.setProperty("--zoc-window-radius", `${bootstrap.info.windowRadius}px`)
+  }
+  const nativeTitleBar = bootstrap.info?.nativeTitleBar === "1"
+  if (nativeTitleBar) {
+    document.documentElement.dataset.zocNativeTitlebar = "1"
+  } else {
+    installWindowControls(bootstrap.fullscreen ?? false)
+  }
 
   events.serverProfilesChanged.on((profiles) => seedOrigins(profiles))
 
@@ -187,6 +202,40 @@ export async function createZocPlatform(version: string): Promise<ZocRuntime> {
   const [zoomLevel, setZoomLevelSignal] = createSignal<DesktopZoomLevel>((bootstrap.zoom || 1) as DesktopZoomLevel)
   const [fullscreen, setFullscreen] = createSignal(bootstrap.fullscreen ?? false)
   events.fullscreenChanged.on((value) => setFullscreen(value))
+
+  const applyZoomLevel = async (level: DesktopZoomLevel) => {
+    await Desktop.setZoom(level)
+    setZoomLevelSignal(level)
+    refreshImeCursor()
+  }
+
+  const execCommand = (command: string) => {
+    try {
+      document.execCommand(command)
+    } catch {
+      // The editing command is unavailable for the current selection.
+    }
+  }
+
+  const pasteIntoEditor = async () => {
+    if (document.execCommand("paste")) return
+    try {
+      const text = await navigator.clipboard.readText()
+      document.execCommand("insertText", false, text)
+    } catch {
+      // Clipboard permissions or a non-editable focus target.
+    }
+  }
+
+  const imeOffsetX = Number(bootstrap.info?.imeOffsetX ?? 0) || 0
+  const imeOffsetY = Number(bootstrap.info?.imeOffsetY ?? 0) || 0
+  // Native IBus/WebKitGTK positioning is the default. The calculated
+  // cursor-area workaround is opt-in: it approximates contenteditable and
+  // input carets, which can fight the native one.
+  const imeCalc = bootstrap.info?.imeCalc === "1" && bootstrap.info?.imeNative !== "1"
+  if (imeCalc) {
+    installImeCursorTracking(() => zoomLevel(), { x: imeOffsetX, y: imeOffsetY })
+  }
 
   const notificationActions = new Map<string, () => void>()
   events.notificationClicked.on((token) => {
@@ -276,8 +325,68 @@ export async function createZocPlatform(version: string): Promise<ZocRuntime> {
     webviewZoom: zoomLevel,
     zoomLevel,
     async setZoomLevel(level) {
-      await Desktop.setZoom(level)
-      setZoomLevelSignal(level)
+      await applyZoomLevel(level)
+    },
+    async runDesktopMenuAction(action) {
+      switch (action) {
+        case "window.minimize":
+          await Desktop.minimizeWindow()
+          return
+        case "window.toggleMaximize":
+          await Desktop.toggleMaximizeWindow()
+          return
+        case "window.close":
+          await Desktop.closeWindow()
+          return
+        case "window.new":
+          // ZOC owns one main window; a second window would need its own
+          // window-scoped storage and event routing.
+          return
+        case "app.installCli":
+          return
+        case "app.relaunch":
+          await Desktop.restart()
+          return
+        case "edit.undo":
+          execCommand("undo")
+          return
+        case "edit.redo":
+          execCommand("redo")
+          return
+        case "edit.cut":
+          execCommand("cut")
+          return
+        case "edit.copy":
+          execCommand("copy")
+          return
+        case "edit.paste":
+          await pasteIntoEditor()
+          return
+        case "edit.delete":
+          execCommand("delete")
+          return
+        case "edit.selectAll":
+          execCommand("selectAll")
+          return
+        case "view.reload":
+          await Desktop.reloadWindow()
+          return
+        case "view.toggleDevTools":
+          await Desktop.toggleDevTools()
+          return
+        case "view.resetZoom":
+          await applyZoomLevel(1)
+          return
+        case "view.zoomIn":
+          await applyZoomLevel(nextDesktopZoomLevel(zoomLevel(), "in"))
+          return
+        case "view.zoomOut":
+          await applyZoomLevel(nextDesktopZoomLevel(zoomLevel(), "out"))
+          return
+        case "view.toggleFullscreen":
+          await Desktop.toggleFullscreen()
+          return
+      }
     },
     windowFullscreen: fullscreen,
     async readClipboardImage() {

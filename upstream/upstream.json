@@ -9,15 +9,25 @@
   "bunVersion": "1.4.4",
   "adapterPatches": [
     {
-      "id": "zoc-host-adapter",
+      "id": "0001-zoc-host-adapter",
       "file": "upstream/patches/0001-zoc-host-adapter.patch",
       "sha256": "f3be6543dc95782705585b95b6f83dbb2cf702b5fae4a0660ad424b9ac6b1e7c"
+    },
+    {
+      "id": "0002-linux-vertical-titlebar",
+      "file": "upstream/patches/0002-linux-vertical-titlebar.patch",
+      "sha256": "a5b5859aed3b4272ccdcf2c8dea4eaa19ebe7d69cbf1246a256ae0629a0e23ca"
+    },
+    {
+      "id": "0003-zoc-terminal-ime",
+      "file": "upstream/patches/0003-zoc-terminal-ime.patch",
+      "sha256": "a31966b97876a26ae32faa49aa99b7a75bedc1771c2f338430a6e36f638ddd47"
     }
   ],
   "adapterSources": [
     {
       "file": "adapter/src/platform.ts",
-      "sha256": "1048a31d3de74448e2da4fd09bc8b7ae28eb9656b322cc1b2abd53a1e550956e"
+      "sha256": "01d3e8ebb863c7667de85a3ce365a6d250a600579eb8cca3e3b22947c6bb10f9"
     },
     {
       "file": "adapter/vite.zoc.config.ts",
@@ -26,6 +36,18 @@
     {
       "file": "adapter/src/storage.ts",
       "sha256": "556d5734e25d4aa0c88a9fb93456c6613ce93f17f8cc1361012132bb89782fa3"
+    },
+    {
+      "file": "adapter/src/ime.ts",
+      "sha256": "9f592413983f65ad4913e143fda792e1ecf59728102766dd4351b66ee4fecdff"
+    },
+    {
+      "file": "adapter/src/window-controls.ts",
+      "sha256": "990ff295d0014937ae641766cb1548e0946fcd58cba0e2fbfa9446e52f470259"
+    },
+    {
+      "file": "adapter/src/zoc.css",
+      "sha256": "1edc9a8696e214e00c9265aa7c933b6b411e0f8254805e078ffe1a67e8a3e00f"
     }
   ]
 }

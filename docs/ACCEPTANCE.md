@@ -51,6 +51,24 @@ Run this on Fedora GNOME/Wayland with a real OpenCode Server. Record the app ver
 - [ ] Compose Chinese/Japanese/Korean text in the composer and terminal.
 - [ ] Zoom in/out and toggle fullscreen from the menu.
 
+## Window chrome and context menu
+
+- [ ] Drag the window by the empty titlebar; double-click the titlebar toggles maximize.
+- [ ] Minimize, maximize/restore (the icon changes) and close from the top-right controls.
+- [ ] The in-page Window menu's minimize, maximize and close actions do the same as the controls.
+- [ ] Fullscreen hides the controls and their reserved titlebar space and drops the window's 8px corners; maximizing also squares them. Leaving fullscreen or maximize restores the controls, space and corners.
+- [ ] Vertical tabs: the Linux titlebar row remains, the controls stay aligned and the drag region works.
+- [ ] Right-click in the composer, on a link, on an image and on blank page space: the native menu appears. Editing, spelling suggestions and Inspect Element stay; Back, Forward and Reload are absent. Open/Copy Link, Image and Media actions work.
+- [ ] The Window menu's **New Window** is a known no-op.
+
+## IME and rendering
+
+- [ ] Compose Chinese/Japanese/Korean text in the composer at the top of a session and after scrolling a long transcript; the candidate popup stays stable and never appears outside the window. A fixed platform offset is recorded separately; jitter is a failure.
+- [ ] Compose in the terminal as well; candidate placement stays stable around the terminal editor.
+- [ ] With `ZOC_IME_CALC=1`, record whether the caret workaround aligns the popup without jitter; it is not the default.
+- [ ] The startup log reports `dmabuf=enabled` on Wayland with Intel/AMD Mesa or NVIDIA 600-series, or `dmabuf=disabled (CPU)` on older NVIDIA, a VM or a container.
+- [ ] Scroll a long transcript; record smoothness with the active renderer. If it is disabled, record the GPU/session and try `ZOC_DMABUF=on` (or `WEBKIT_DISABLE_DMABUF_RENDERER=0`) only for diagnosis.
+
 ## Native inbox
 
 - [ ] The native window lists the configured servers.
@@ -83,6 +101,7 @@ Report:
 - ZOC version and `upstream.json` commit;
 - Fedora version, GNOME/Wayland, GPU and scale;
 - WebKitGTK version;
+- whether the startup log reports DMA-BUF enabled or disabled;
 - which checks passed/failed and the observed error;
 - `docs/PERFORMANCE.md` updates if measurements were taken.
 
