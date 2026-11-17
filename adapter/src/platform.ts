@@ -8,6 +8,7 @@ import type { AsyncStorage } from "@solid-primitives/storage"
 import { createSignal } from "solid-js"
 import { Desktop, events } from "./mygo"
 import type { AttachmentOptions, Bootstrap, Profile } from "./mygo"
+import { createGoStorage } from "./storage"
 
 type ServerSeed = Extract<ServerConnection.Any, { type: "http" }>
 
@@ -97,68 +98,17 @@ const storages = new Map<string, AsyncStorage>()
 
 /**
  * Settings, server registry and prompt drafts live in ZOC's own user-data
- * directory through a typed Go boundary. Reads are cached in the page;
- * writes reach Go in call order.
+ * directory through a typed Go boundary. `createGoStorage` serializes the
+ * writes and reports a failed disk write to the caller.
  */
 function storageFor(name = "default"): AsyncStorage {
   const cached = storages.get(name)
   if (cached) return cached
-
-  const cache = new Map<string, string>()
-  let ready: Promise<void> | undefined
-  let writes: Promise<unknown> = Promise.resolve()
-
-  const load = () => {
-    ready ??= Desktop.storageItems(name).then((snapshot) => {
-      for (const [key, value] of Object.entries(snapshot.items)) cache.set(key, value)
-    })
-    return ready
-  }
-
-  const flush = (insert: Record<string, string>, remove: string[]) => {
-    const next = writes.then(() => Desktop.storageUpdate(name, insert, remove)).then(
-      () => undefined,
-      (error) => {
-        console.error(`[zoc] storage write failed for ${name}`, error)
-      },
-    )
-    writes = next
-    return next
-  }
-
-  const storage: AsyncStorage = {
-    getItem: async (key) => {
-      await load()
-      return cache.get(key) ?? null
-    },
-    setItem: async (key, value) => {
-      await load()
-      cache.set(key, value)
-      await flush({ [key]: value }, [])
-    },
-    removeItem: async (key) => {
-      await load()
-      cache.delete(key)
-      await flush({}, [key])
-    },
-    clear: async () => {
-      await load()
-      cache.clear()
-      writes = writes.then(() => Desktop.storageClear(name))
-      await writes
-    },
-    key: async (index: number) => {
-      await load()
-      return [...cache.keys()][index] ?? null
-    },
-    getLength: async () => {
-      await load()
-      return cache.size
-    },
-    get length() {
-      return cache.size
-    },
-  }
+  const storage = createGoStorage(name, {
+    items: (namespace) => Desktop.storageItems(namespace),
+    update: (namespace, insert, remove) => Desktop.storageUpdate(namespace, insert, remove),
+    clear: (namespace) => Desktop.storageClear(namespace),
+  })
   storages.set(name, storage)
   return storage
 }

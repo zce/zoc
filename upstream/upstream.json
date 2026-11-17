@@ -17,11 +17,15 @@
   "adapterSources": [
     {
       "file": "adapter/src/platform.ts",
-      "sha256": "232b801117935aa7cf2905a399aea145afe637feca821899c1b1ebbeabd6192b"
+      "sha256": "1048a31d3de74448e2da4fd09bc8b7ae28eb9656b322cc1b2abd53a1e550956e"
     },
     {
       "file": "adapter/vite.zoc.config.ts",
       "sha256": "1af6948977859b4e317517b0ae4ee05eea8804f212eaa8272c6be9d7c1a405d9"
+    },
+    {
+      "file": "adapter/src/storage.ts",
+      "sha256": "556d5734e25d4aa0c88a9fb93456c6613ce93f17f8cc1361012132bb89782fa3"
     }
   ]
 }

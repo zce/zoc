@@ -3,6 +3,7 @@ package native
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,6 +15,9 @@ import (
 type fakeBackend struct {
 	servers     []profiles.Profile
 	snapshot    desktop.ServerSnapshot
+	snapshotFn  func(ctx context.Context, id, password string) (desktop.ServerSnapshot, error)
+	page        desktop.NativeSessionPage
+	moreCalled  chan struct{}
 	openSession [2]string
 	openPath    string
 	added       []desktop.ProfileInput
@@ -33,7 +37,16 @@ func (f *fakeBackend) UpdateProfile(id, name, url string) (profiles.Profile, err
 }
 func (f *fakeBackend) RemoveProfile(id string) error { return nil }
 func (f *fakeBackend) Snapshot(ctx context.Context, id, password string) (desktop.ServerSnapshot, error) {
+	if f.snapshotFn != nil {
+		return f.snapshotFn(ctx, id, password)
+	}
 	return f.snapshot, nil
+}
+func (f *fakeBackend) SessionsPage(ctx context.Context, id, password, cursor string) (desktop.NativeSessionPage, error) {
+	if f.moreCalled != nil {
+		f.moreCalled <- struct{}{}
+	}
+	return f.page, nil
 }
 func (f *fakeBackend) TestServer(ctx context.Context, id, password string) (desktop.TestResult, error) {
 	return desktop.TestResult{OK: true, Version: "2.3.0", Hostname: "fedora"}, nil
@@ -118,5 +131,148 @@ func TestFilteredSessions(t *testing.T) {
 	got = filteredSessions(sessions, "", "")
 	if len(got) != 3 || got[0].ID != "3" {
 		t.Fatalf("sorted = %+v", got)
+	}
+}
+
+func waitFor(t *testing.T, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("condition not reached")
+}
+
+func TestInboxLoadsMoreSessions(t *testing.T) {
+	backend := &fakeBackend{
+		servers: []profiles.Profile{{ID: "srv", Name: "Work", URL: "http://127.0.0.1:4096"}},
+		snapshot: desktop.ServerSnapshot{
+			Server:       profiles.Profile{ID: "srv", Name: "Work", URL: "http://127.0.0.1:4096"},
+			Sessions:     []desktop.NativeSession{{ID: "ses-1", ProjectID: "p1", Title: "First", Updated: 2}},
+			SessionsNext: "page-2",
+		},
+		page: desktop.NativeSessionPage{
+			Sessions: []desktop.NativeSession{{ID: "ses-2", ProjectID: "p1", Title: "Second", Updated: 1}},
+		},
+		moreCalled: make(chan struct{}, 1),
+	}
+	app := &Inbox{
+		backend: backend, servers: backend.servers, selected: "srv",
+		snapshot: &backend.snapshot, sessionsNext: "page-2", passwords: map[string]string{},
+	}
+	tt := ui.NewTester(app.view, 980, 680)
+	if !tt.HasText("more available") || !tt.HasText("First") {
+		t.Fatalf("texts = %q", tt.Texts())
+	}
+	if err := tt.Click("Load more sessions"); err != nil {
+		t.Fatal(err)
+	}
+	<-backend.moreCalled
+	waitFor(t, func() bool { return app.snapshot != nil && len(app.snapshot.Sessions) == 2 })
+	tt.Frame()
+	if !tt.HasText("Second") {
+		t.Fatalf("loaded page not shown: %q", tt.Texts())
+	}
+	if app.sessionsNext != "" {
+		t.Fatalf("next cursor = %q", app.sessionsNext)
+	}
+}
+
+func TestStaleRefreshCannotOverwriteNewerResult(t *testing.T) {
+	release := []chan struct{}{make(chan struct{}), make(chan struct{})}
+	started := make(chan int, 2)
+	var calls atomic.Int32
+	backend := &fakeBackend{
+		servers: []profiles.Profile{{ID: "srv", Name: "Work", URL: "http://127.0.0.1:4096"}},
+		snapshotFn: func(ctx context.Context, id, password string) (desktop.ServerSnapshot, error) {
+			n := int(calls.Add(1))
+			started <- n
+			<-release[n-1]
+			return desktop.ServerSnapshot{
+				Server:   profiles.Profile{ID: id, Name: "Work", URL: "http://127.0.0.1:4096"},
+				Sessions: []desktop.NativeSession{{ID: "ses", Title: []string{"old", "new"}[n-1]}},
+			}, nil
+		},
+	}
+	app := &Inbox{backend: backend, servers: backend.servers, selected: "srv", passwords: map[string]string{}}
+	app.refresh()
+	if n := <-started; n != 1 {
+		t.Fatalf("first call = %d", n)
+	}
+	app.refresh()
+	if n := <-started; n != 2 {
+		t.Fatalf("second call = %d", n)
+	}
+	close(release[1])
+	waitFor(t, func() bool {
+		app.mu.Lock()
+		defer app.mu.Unlock()
+		return app.snapshot != nil && len(app.snapshot.Sessions) == 1 && app.snapshot.Sessions[0].Title == "new"
+	})
+	close(release[0])
+	time.Sleep(30 * time.Millisecond)
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	if app.snapshot == nil || len(app.snapshot.Sessions) != 1 || app.snapshot.Sessions[0].Title != "new" {
+		t.Fatalf("stale result overwrote newer: %+v", app.snapshot)
+	}
+}
+
+func TestMergeSessionsDeduplicates(t *testing.T) {
+	got := mergeSessions(
+		[]desktop.NativeSession{{ID: "a", Title: "A"}, {ID: "b", Title: "B"}},
+		[]desktop.NativeSession{{ID: "b", Title: "B2"}, {ID: "c", Title: "C"}},
+	)
+	if len(got) != 3 || got[2].ID != "c" || got[1].Title != "B" {
+		t.Fatalf("merged = %+v", got)
+	}
+}
+
+func TestSwitchServerIgnoresOlderRefresh(t *testing.T) {
+	releaseA := make(chan struct{})
+	releaseB := make(chan struct{})
+	started := make(chan string, 2)
+	backend := &fakeBackend{
+		servers: []profiles.Profile{
+			{ID: "a", Name: "A", URL: "http://127.0.0.1:4096"},
+			{ID: "b", Name: "B", URL: "http://127.0.0.1:4097"},
+		},
+		snapshotFn: func(ctx context.Context, id, password string) (desktop.ServerSnapshot, error) {
+			started <- id
+			if id == "a" {
+				<-releaseA
+			} else {
+				<-releaseB
+			}
+			return desktop.ServerSnapshot{
+				Server:   profiles.Profile{ID: id, Name: id, URL: "http://127.0.0.1:4096"},
+				Sessions: []desktop.NativeSession{{ID: "ses", Title: id}},
+			}, nil
+		},
+	}
+	app := &Inbox{backend: backend, servers: backend.servers, selected: "a", passwords: map[string]string{}}
+	app.refresh()
+	if id := <-started; id != "a" {
+		t.Fatalf("first server = %s", id)
+	}
+	app.selectServer("b")
+	if id := <-started; id != "b" {
+		t.Fatalf("second server = %s", id)
+	}
+	close(releaseB)
+	waitFor(t, func() bool {
+		app.mu.Lock()
+		defer app.mu.Unlock()
+		return app.selected == "b" && app.snapshot != nil && app.snapshot.Sessions[0].Title == "b"
+	})
+	close(releaseA)
+	time.Sleep(30 * time.Millisecond)
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	if app.selected != "b" || app.snapshot == nil || app.snapshot.Sessions[0].Title != "b" {
+		t.Fatalf("server switch was overwritten: %+v", app.snapshot)
 	}
 }

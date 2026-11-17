@@ -18,18 +18,28 @@ on:
         default: false
 
 permissions:
-  contents: write
-  actions: read
+  contents: read
 
 concurrency:
   group: upstream-sync
   cancel-in-progress: false
 
 jobs:
-  sync:
-    name: Sync, verify and publish
+  verify:
+    name: Build and verify upstream artifact
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 75
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      changed: ${{ steps.previous.outputs.changed }}
+      version: ${{ steps.previous.outputs.version }}
+      sha: ${{ steps.upstream.outputs.sha }}
+      signed: ${{ steps.signing.outputs.signed }}
+      frontend_sha: ${{ steps.artifact.outputs.frontend_sha }}
+      previous_sha: ${{ steps.previous.outputs.previous_sha }}
+      previous_tag: ${{ steps.previous.outputs.latest_tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -71,12 +81,16 @@ jobs:
           latest="$(tail -n 1 /tmp/release-tags.txt || true)"
           version="0.1.0"
           previous_sha=""
+          previous_manifest=false
           if [[ -n "${latest}" ]]; then
             previous_version="${latest#zoc-v}"
             version="$(python3 scripts/next-version.py "${previous_version}")"
             mkdir -p /tmp/last-release
             if gh release download "${latest}" --pattern upstream.json --dir /tmp/last-release --clobber 2>/dev/null; then
               previous_sha="$(jq -r '.upstreamCommit // ""' /tmp/last-release/upstream.json)"
+            fi
+            if gh release view "${latest}" --json assets --jq '.assets[].name' | grep -qE '^update-.*\.json$'; then
+              previous_manifest=true
             fi
           fi
           # Never reuse a tag: pick the first unused patch version.
@@ -86,12 +100,31 @@ jobs:
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "previous_sha=${previous_sha}" >> "$GITHUB_OUTPUT"
           echo "latest_tag=${latest}" >> "$GITHUB_OUTPUT"
+          echo "previous_manifest=${previous_manifest}" >> "$GITHUB_OUTPUT"
           echo "Previous upstream: ${previous_sha:-none}; next ZOC version: ${version}"
           if [[ "${previous_sha}" == "${UPSTREAM_SHA}" && "${FORCE}" != "true" ]]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Check signing continuity
+        id: signing
+        if: steps.previous.outputs.changed == 'true'
+        env:
+          ZOC_UPDATER_PUBLIC_KEY: ${{ vars.ZOC_UPDATER_PUBLIC_KEY }}
+          MYGO_UPDATER_PRIVATE_KEY: ${{ secrets.MYGO_UPDATER_PRIVATE_KEY }}
+        run: |
+          has_private_key=false
+          if [[ -n "${MYGO_UPDATER_PRIVATE_KEY:-}" ]]; then
+            has_private_key=true
+          fi
+          python3 scripts/signing-policy.py \
+            --previous /tmp/last-release/upstream.json \
+            --previous-has-manifest "${{ steps.previous.outputs.previous_manifest }}" \
+            --public-key "${ZOC_UPDATER_PUBLIC_KEY:-}" \
+            --has-private-key "${has_private_key}" \
+            --out "$GITHUB_OUTPUT"
 
       - name: Nothing to do
         if: steps.previous.outputs.changed != 'true'
@@ -106,17 +139,13 @@ jobs:
         env:
           ZOC_VERSION: ${{ steps.previous.outputs.version }}
           ZOC_UPSTREAM_COMMIT: ${{ steps.upstream.outputs.sha }}
-          ZOC_UPDATER_PUBLIC_KEY: ${{ vars.ZOC_UPDATER_PUBLIC_KEY }}
         run: ./scripts/container.sh ./scripts/check.sh
 
-      - name: Build Linux artifact
+      - name: Build unsigned Linux artifact
         if: steps.previous.outputs.changed == 'true'
         env:
           ZOC_VERSION: ${{ steps.previous.outputs.version }}
           ZOC_UPSTREAM_COMMIT: ${{ steps.upstream.outputs.sha }}
-          ZOC_UPDATER_PUBLIC_KEY: ${{ vars.ZOC_UPDATER_PUBLIC_KEY }}
-          MYGO_UPDATER_PRIVATE_KEY: ${{ secrets.MYGO_UPDATER_PRIVATE_KEY }}
-          GH_TOKEN: ${{ github.token }}
         run: ./scripts/container.sh ./scripts/build.sh
 
       - name: WebKitGTK + Native UI smoke
@@ -126,36 +155,192 @@ jobs:
           ZOC_SMOKE_INBOX: "1"
         run: ./scripts/container.sh ./scripts/smoke.sh
 
-      - name: Generate release notes
+      - name: Stage verified inputs
+        id: artifact
         if: steps.previous.outputs.changed == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ZOC_VERSION: ${{ steps.previous.outputs.version }}
-          UPSTREAM_SHA: ${{ steps.upstream.outputs.sha }}
-          PREVIOUS_SHA: ${{ steps.previous.outputs.previous_sha }}
-          PREVIOUS_TAG: ${{ steps.previous.outputs.latest_tag }}
-        run: ./scripts/release-notes.sh > /tmp/release-notes.md
+        run: |
+          frontend_sha="$(jq -r '.frontendSha256' build/linux-amd64/upstream.json)"
+          test -n "${frontend_sha}"
+          test "$(jq -r '.updateSigning' build/linux-amd64/upstream.json)" = "not-provisioned"
+          test ! -e build/linux-amd64/update-linux-amd64.json
+          echo "frontend_sha=${frontend_sha}" >> "$GITHUB_OUTPUT"
+          tar -czf build/zoc-frontend.tar.gz -C frontend .
+          tar -czf build/zoc-unsigned.tar.gz -C build linux-amd64 upstream.json
 
-      - name: Verify updater metadata
+      - name: Upload verified frontend for the signing job
         if: steps.previous.outputs.changed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: zoc-frontend
+          path: build/zoc-frontend.tar.gz
+          retention-days: 2
+
+      - name: Upload unsigned artifact
+        if: steps.previous.outputs.changed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: zoc-unsigned
+          path: |
+            build/zoc-unsigned.tar.gz
+            .cache/smoke/smoke-inbox.png
+          retention-days: 3
+
+      - name: Dry-run summary
+        if: steps.previous.outputs.changed == 'true' && github.event.inputs.publish != 'true' && github.event_name != 'schedule'
+        run: |
+          echo "Gates passed; no release was published (publish=false)."
+          cat build/linux-amd64/upstream.json
+
+  sign:
+    name: Sign release artifact
+    needs: verify
+    if: needs.verify.result == 'success' && needs.verify.outputs.changed == 'true' && needs.verify.outputs.signed == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Podman
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman uidmap slirp4netns jq
+          podman --version
+
+      - name: Download verified frontend
+        uses: actions/download-artifact@v4
+        with:
+          name: zoc-frontend
+          path: artifact
+
+      - name: Restore verified frontend
+        run: |
+          mkdir -p frontend
+          tar -xzf artifact/zoc-frontend.tar.gz -C frontend
+
+      - name: Build pinned toolchain image
+        run: podman build --pull=missing -f Containerfile -t localhost/zoc-build:2026-11-16 .
+
+      - name: Build and sign without running upstream scripts
         env:
+          ZOC_VERSION: ${{ needs.verify.outputs.version }}
+          ZOC_UPSTREAM_COMMIT: ${{ needs.verify.outputs.sha }}
+          ZOC_FRONTEND_SHA: ${{ needs.verify.outputs.frontend_sha }}
           ZOC_UPDATER_PUBLIC_KEY: ${{ vars.ZOC_UPDATER_PUBLIC_KEY }}
           MYGO_UPDATER_PRIVATE_KEY: ${{ secrets.MYGO_UPDATER_PRIVATE_KEY }}
+        run: ./scripts/container.sh ./scripts/build-signed.sh
+
+      - name: Stage signed artifact
+        run: tar -czf build/zoc-signed.tar.gz -C build linux-amd64 upstream.json
+
+      - name: Upload signed artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zoc-signed
+          path: build/zoc-signed.tar.gz
+          retention-days: 3
+
+      - name: Dry-run summary
+        if: github.event.inputs.publish != 'true' && github.event_name != 'schedule'
         run: |
-          if [[ -n "${ZOC_UPDATER_PUBLIC_KEY}" && -n "${MYGO_UPDATER_PRIVATE_KEY}" ]]; then
-            test -f build/linux-amd64/update-linux-amd64.json || {
-              echo "error: signed update manifest is missing" >&2; exit 1;
-            }
+          echo "Signed gates passed; no release was published (publish=false)."
+          cat build/linux-amd64/upstream.json
+
+  publish:
+    name: Verify and publish release
+    needs: [verify, sign]
+    if: >-
+      always() &&
+      needs.verify.result == 'success' &&
+      needs.verify.outputs.changed == 'true' &&
+      ((needs.verify.outputs.signed == 'true' && needs.sign.result == 'success') ||
+       (needs.verify.outputs.signed != 'true' && needs.sign.result == 'skipped')) &&
+      (github.event.inputs.publish == 'true' || github.event_name == 'schedule')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Podman
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman uidmap slirp4netns jq
+          podman --version
+
+      - name: Download signed artifact
+        if: needs.verify.outputs.signed == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: zoc-signed
+          path: artifact
+
+      - name: Download unsigned artifact
+        if: needs.verify.outputs.signed != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: zoc-unsigned
+          path: artifact
+
+      - name: Restore release artifact
+        run: |
+          mkdir -p build
+          if [[ "${{ needs.verify.outputs.signed }}" == "true" ]]; then
+            tar -xzf artifact/zoc-signed.tar.gz -C build
           else
-            echo "Signed in-app updates are not provisioned; publishing plain artifacts only."
+            tar -xzf artifact/zoc-unsigned.tar.gz -C build
+          fi
+          (cd build/linux-amd64 && sha256sum -c SHA256SUMS)
+
+      - name: Build pinned toolchain image
+        run: podman build --pull=missing -f Containerfile -t localhost/zoc-build:2026-11-16 .
+
+      - name: WebKitGTK + Native UI smoke
+        env:
+          ZOC_VERSION: ${{ needs.verify.outputs.version }}
+          ZOC_SMOKE_INBOX: "1"
+        run: ./scripts/container.sh ./scripts/smoke.sh
+
+      - name: Enforce signed channel state
+        env:
+          SIGNED: ${{ needs.verify.outputs.signed }}
+        run: |
+          metadata="build/linux-amd64/upstream.json"
+          if [[ "${SIGNED}" == "true" ]]; then
+            jq -e '.updateSigning == "provisioned" and ((.updaterPublicKey // "") | length > 0)' "${metadata}" >/dev/null
+            test -f build/linux-amd64/update-linux-amd64.json
+            echo "Signed update metadata present."
+          else
+            jq -e '.updateSigning == "not-provisioned" and ((.updaterPublicKey // "") | length == 0)' "${metadata}" >/dev/null
+            if compgen -G 'build/linux-amd64/update-*.json' >/dev/null; then
+              echo "error: unsigned channel contains an update manifest" >&2
+              exit 1
+            fi
+            echo "Unsigned channel: no updater keys or manifests."
           fi
 
-      - name: Publish release
-        if: steps.previous.outputs.changed == 'true' && (github.event.inputs.publish == 'true' || github.event_name == 'schedule')
+      - name: Generate release notes
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.previous.outputs.version }}
-          UPSTREAM_SHA: ${{ steps.upstream.outputs.sha }}
+          ZOC_VERSION: ${{ needs.verify.outputs.version }}
+          UPSTREAM_SHA: ${{ needs.verify.outputs.sha }}
+          PREVIOUS_SHA: ${{ needs.verify.outputs.previous_sha }}
+          PREVIOUS_TAG: ${{ needs.verify.outputs.previous_tag }}
+        run: ./scripts/release-notes.sh > /tmp/release-notes.md
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.verify.outputs.version }}
+          UPSTREAM_SHA: ${{ needs.verify.outputs.sha }}
         run: |
           tag="zoc-v${VERSION}"
           git config user.name "github-actions[bot]"
@@ -172,9 +357,3 @@ jobs:
             --notes-file /tmp/release-notes.md \
             --verify-tag
           echo "Published ${tag}"
-
-      - name: Dry-run summary
-        if: steps.previous.outputs.changed == 'true' && github.event.inputs.publish != 'true' && github.event_name != 'schedule'
-        run: |
-          echo "Gates passed; no release was published (publish=false)."
-          cat build/linux-amd64/upstream.json

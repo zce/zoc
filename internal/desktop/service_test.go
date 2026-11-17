@@ -40,7 +40,7 @@ func TestSnapshotAndTestServer(t *testing.T) {
 		case "/api/project":
 			w.Write([]byte(`[{"id":"p1","canonical":"/work/zoc","name":"zoc","time":{"created":1,"updated":2}}]`))
 		case "/api/session":
-			w.Write([]byte(`{"data":[{"id":"ses-1","projectID":"p1","title":"Fix login","time":{"created":1,"updated":2,"busy":3,"idle":2}}],"cursor":{"previous":null,"next":null}}`))
+			w.Write([]byte(`{"data":[{"id":"ses-1","projectID":"p1","title":"Fix login","time":{"created":1,"updated":2,"busy":3,"idle":2}}],"cursor":{"previous":null,"next":"cursor-2"}}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -61,6 +61,9 @@ func TestSnapshotAndTestServer(t *testing.T) {
 	}
 	if len(snapshot.Sessions) != 1 || !snapshot.Sessions[0].Busy {
 		t.Fatalf("sessions = %+v", snapshot.Sessions)
+	}
+	if snapshot.SessionsNext != "cursor-2" {
+		t.Fatalf("sessions cursor = %q", snapshot.SessionsNext)
 	}
 }
 

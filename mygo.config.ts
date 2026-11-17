@@ -31,6 +31,10 @@ export default defineConfig({
           publicKey,
           github: "zce/zoc",
           tagPrefix: "zoc-v",
+          // Signed releases are produced in the isolated signing job. Delta
+          // updates would make that job call GitHub for earlier releases;
+          // full signed archives keep that job free of write tokens.
+          deltas: 0,
         },
       }
     : {}),

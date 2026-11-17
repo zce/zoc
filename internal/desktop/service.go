@@ -118,11 +118,18 @@ type NativeSession struct {
 // ServerSnapshot is the read-only data the native inbox displays. OpenCode
 // remains the source of truth; ZOC caches nothing across calls.
 type ServerSnapshot struct {
-	Server   profiles.Profile `json:"server"`
-	Version  string           `json:"version,omitempty"`
-	Hostname string           `json:"hostname,omitempty"`
-	Projects []NativeProject  `json:"projects"`
-	Sessions []NativeSession  `json:"sessions"`
+	Server       profiles.Profile `json:"server"`
+	Version      string           `json:"version,omitempty"`
+	Hostname     string           `json:"hostname,omitempty"`
+	Projects     []NativeProject  `json:"projects"`
+	Sessions     []NativeSession  `json:"sessions"`
+	SessionsNext string           `json:"sessionsNext,omitempty"`
+}
+
+// NativeSessionPage is one page of root sessions for Native UI.
+type NativeSessionPage struct {
+	Sessions []NativeSession `json:"sessions"`
+	Next     string          `json:"next,omitempty"`
 }
 
 // SetMainWindow records the Web UI window and wires fullscreen events.
@@ -251,11 +258,11 @@ func (s *Service) Snapshot(ctx context.Context, id, password string) (ServerSnap
 	if err != nil {
 		return ServerSnapshot{}, err
 	}
-	sessions, err := client.Sessions(ctx, "", 100)
+	page, err := client.SessionsPage(ctx, "", 100, "")
 	if err != nil {
 		return ServerSnapshot{}, err
 	}
-	out := ServerSnapshot{Server: p, Version: info.Version, Hostname: info.Hostname}
+	out := ServerSnapshot{Server: p, Version: info.Version, Hostname: info.Hostname, SessionsNext: page.Next}
 	for _, project := range projects {
 		name := project.Name
 		if name == "" {
@@ -265,14 +272,40 @@ func (s *Service) Snapshot(ctx context.Context, id, password string) (ServerSnap
 			ID: project.ID, Name: name, Canonical: project.Canonical, Updated: project.Time.Updated,
 		})
 	}
+	out.Sessions = nativeSessions(page.Sessions)
+	return out, nil
+}
+
+// SessionsPage reads one page of root sessions for Native UI. The cursor is
+// opaque and comes from the previous page; no local session state is kept.
+func (s *Service) SessionsPage(ctx context.Context, id, password, cursor string) (NativeSessionPage, error) {
+	p, ok := s.Store.Get(id)
+	if !ok {
+		return NativeSessionPage{}, fmt.Errorf("server profile not found")
+	}
+	client, err := opencode.New(p.URL, password, s.Policy)
+	if err != nil {
+		return NativeSessionPage{}, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	page, err := client.SessionsPage(ctx, "", 100, cursor)
+	if err != nil {
+		return NativeSessionPage{}, err
+	}
+	return NativeSessionPage{Sessions: nativeSessions(page.Sessions), Next: page.Next}, nil
+}
+
+func nativeSessions(sessions []opencode.Session) []NativeSession {
+	out := make([]NativeSession, 0, len(sessions))
 	for _, session := range sessions {
-		out.Sessions = append(out.Sessions, NativeSession{
+		out = append(out, NativeSession{
 			ID: session.ID, ProjectID: session.ProjectID, Title: session.Title,
 			Updated: session.Time.Updated, Created: session.Time.Created,
 			Busy: session.Time.Busy > session.Time.Idle,
 		})
 	}
-	return out, nil
+	return out
 }
 
 // OpenSession navigates the official Web UI to a session.

@@ -105,9 +105,17 @@ func (c *Client) Projects(ctx context.Context) ([]Project, error) {
 	return out, nil
 }
 
-// Sessions lists root sessions, newest first. projectID narrows the list
-// when non-empty.
-func (c *Client) Sessions(ctx context.Context, projectID string, limit int) ([]Session, error) {
+// SessionPage is one page of the server's ordered session list. Next is the
+// opaque cursor for the following page, empty when there is none.
+type SessionPage struct {
+	Sessions []Session
+	Next     string
+}
+
+// SessionsPage lists one page of root sessions, newest first. projectID
+// narrows the list when non-empty; cursor is the server's opaque cursor from
+// the previous page.
+func (c *Client) SessionsPage(ctx context.Context, projectID string, limit int, cursor string) (SessionPage, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 100
 	}
@@ -118,6 +126,9 @@ func (c *Client) Sessions(ctx context.Context, projectID string, limit int) ([]S
 	if projectID != "" {
 		query.Set("project", projectID)
 	}
+	if cursor != "" {
+		query.Set("cursor", cursor)
+	}
 	var out struct {
 		Data   []Session `json:"data"`
 		Cursor struct {
@@ -125,9 +136,15 @@ func (c *Client) Sessions(ctx context.Context, projectID string, limit int) ([]S
 		} `json:"cursor"`
 	}
 	if err := c.do(ctx, http.MethodGet, "/api/session", query, &out); err != nil {
-		return nil, err
+		return SessionPage{}, err
 	}
-	return out.Data, nil
+	return SessionPage{Sessions: out.Data, Next: out.Cursor.Next}, nil
+}
+
+// Sessions lists the first page of root sessions, newest first.
+func (c *Client) Sessions(ctx context.Context, projectID string, limit int) ([]Session, error) {
+	page, err := c.SessionsPage(ctx, projectID, limit, "")
+	return page.Sessions, err
 }
 
 func (c *Client) do(ctx context.Context, method, path string, query url.Values, out any) error {

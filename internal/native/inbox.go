@@ -27,6 +27,7 @@ type Backend interface {
 	UpdateProfile(id, name, url string) (profiles.Profile, error)
 	RemoveProfile(id string) error
 	Snapshot(ctx context.Context, id, password string) (desktop.ServerSnapshot, error)
+	SessionsPage(ctx context.Context, id, password, cursor string) (desktop.NativeSessionPage, error)
 	TestServer(ctx context.Context, id, password string) (desktop.TestResult, error)
 	OpenSession(serverID, sessionID string) error
 	OpenMain(path string) error
@@ -45,13 +46,18 @@ const (
 type Inbox struct {
 	backend Backend
 
-	mu       sync.Mutex
-	win      *mygo.Window
-	servers  []profiles.Profile
-	selected string
-	snapshot *desktop.ServerSnapshot
-	loading  bool
-	loadErr  string
+	mu           sync.Mutex
+	win          *mygo.Window
+	servers      []profiles.Profile
+	selected     string
+	snapshot     *desktop.ServerSnapshot
+	loading      bool
+	loadErr      string
+	sessionsNext string
+	loadingMore  bool
+	moreErr      string
+	loadSeq      uint64
+	loadCancel   context.CancelFunc
 
 	projectName string
 	filter      string
@@ -115,6 +121,13 @@ func (a *Inbox) Open() {
 		if a.win == w {
 			a.win = nil
 		}
+		a.loadSeq++
+		if a.loadCancel != nil {
+			a.loadCancel()
+			a.loadCancel = nil
+		}
+		a.loading = false
+		a.loadingMore = false
 		a.passwords = map[string]string{}
 		a.formPassword = ""
 		a.mu.Unlock()
@@ -153,6 +166,14 @@ func (a *Inbox) selectServer(id string) {
 	}
 	a.selected = id
 	a.snapshot = nil
+	a.sessionsNext = ""
+	a.loadingMore = false
+	a.moreErr = ""
+	a.loadSeq++
+	if a.loadCancel != nil {
+		a.loadCancel()
+		a.loadCancel = nil
+	}
 	a.projectName = ""
 	a.filter = ""
 	a.formMode = formNone
@@ -181,26 +202,80 @@ func (a *Inbox) refresh() {
 		return
 	}
 	a.mu.Lock()
+	a.loadSeq++
+	seq := a.loadSeq
+	if a.loadCancel != nil {
+		a.loadCancel()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	a.loadCancel = cancel
 	password := a.passwords[profile.ID]
 	serverID := profile.ID
 	a.loading = true
 	a.loadErr = ""
+	a.sessionsNext = ""
+	a.loadingMore = false
+	a.moreErr = ""
 	a.mu.Unlock()
 	a.invalidate()
 
 	go func() {
-		snapshot, err := a.backend.Snapshot(context.Background(), serverID, password)
+		snapshot, err := a.backend.Snapshot(ctx, serverID, password)
 		a.mu.Lock()
-		if a.selected != serverID {
+		if a.loadSeq != seq || a.selected != serverID {
 			a.mu.Unlock()
 			return
 		}
+		a.loadCancel = nil
 		a.loading = false
 		if err != nil {
-			a.loadErr = err.Error()
+			if ctx.Err() == nil {
+				a.loadErr = err.Error()
+			}
 		} else {
 			a.snapshot = &snapshot
+			a.sessionsNext = snapshot.SessionsNext
 			a.loadErr = ""
+		}
+		a.mu.Unlock()
+		a.invalidate()
+	}()
+}
+
+func (a *Inbox) loadMore() {
+	profile, ok := a.current()
+	if !ok {
+		return
+	}
+	a.mu.Lock()
+	if a.loading || a.loadingMore || a.snapshot == nil || a.sessionsNext == "" {
+		a.mu.Unlock()
+		return
+	}
+	seq := a.loadSeq
+	cursor := a.sessionsNext
+	serverID := profile.ID
+	password := a.passwords[profile.ID]
+	a.loadingMore = true
+	a.moreErr = ""
+	a.mu.Unlock()
+	a.invalidate()
+
+	go func() {
+		page, err := a.backend.SessionsPage(context.Background(), serverID, password, cursor)
+		a.mu.Lock()
+		if a.loadSeq != seq || a.selected != serverID {
+			a.mu.Unlock()
+			return
+		}
+		a.loadingMore = false
+		if err != nil {
+			a.moreErr = err.Error()
+		} else if a.snapshot != nil {
+			next := *a.snapshot
+			next.Sessions = mergeSessions(a.snapshot.Sessions, page.Sessions)
+			a.snapshot = &next
+			a.sessionsNext = page.Next
 		}
 		a.mu.Unlock()
 		a.invalidate()
@@ -284,6 +359,9 @@ func (a *Inbox) saveForm() {
 		delete(a.passwords, profile.ID)
 	}
 	a.snapshot = nil
+	a.sessionsNext = ""
+	a.loadingMore = false
+	a.moreErr = ""
 	a.loadErr = ""
 	a.projectName = ""
 	a.filter = ""
@@ -321,6 +399,9 @@ func (a *Inbox) removeSelected() {
 	a.mu.Lock()
 	a.selected = ""
 	a.snapshot = nil
+	a.sessionsNext = ""
+	a.loadingMore = false
+	a.moreErr = ""
 	a.formMode = formNone
 	delete(a.passwords, profile.ID)
 	a.mu.Unlock()
@@ -335,6 +416,9 @@ func (a *Inbox) view(c *ui.Context) {
 	snapshot := a.snapshot
 	loading := a.loading
 	loadErr := a.loadErr
+	sessionsNext := a.sessionsNext
+	loadingMore := a.loadingMore
+	moreErr := a.moreErr
 	formMode := a.formMode
 	formName := a.formName
 	formURL := a.formURL
@@ -413,7 +497,7 @@ func (a *Inbox) view(c *ui.Context) {
 				})
 				return
 			}
-			a.detailView(c, profile, snapshot, loading, loadErr, projectName, filter)
+			a.detailView(c, profile, snapshot, loading, loadErr, sessionsNext, loadingMore, moreErr, projectName, filter)
 		})
 	})
 }
@@ -475,7 +559,7 @@ func (a *Inbox) formView(c *ui.Context, mode formMode, name, rawURL, password, f
 	})
 }
 
-func (a *Inbox) detailView(c *ui.Context, profile profiles.Profile, snapshot *desktop.ServerSnapshot, loading bool, loadErr string, projectName, filter string) {
+func (a *Inbox) detailView(c *ui.Context, profile profiles.Profile, snapshot *desktop.ServerSnapshot, loading bool, loadErr, sessionsNext string, loadingMore bool, moreErr, projectName, filter string) {
 	t := c.Theme()
 	ui.Column(c).FillHeight().Children(func() {
 		ui.Row(c).Padding(20, 24, 12, 24).Gap(10).Children(func() {
@@ -569,7 +653,14 @@ func (a *Inbox) detailView(c *ui.Context, profile profiles.Profile, snapshot *de
 
 		sessions := filteredSessions(snapshot.Sessions, chosenID, filter)
 		ui.Row(c).Padding(0, 24, 6, 24).Children(func() {
-			ui.Text(c, sessionCount(len(sessions))).FontSize(11).TextColor(t.TextMuted)
+			label := sessionCount(len(sessions))
+			if filter != "" {
+				label = fmt.Sprintf("%d matching sessions", len(sessions))
+			}
+			if sessionsNext != "" {
+				label += " · more available"
+			}
+			ui.Text(c, label).FontSize(11).TextColor(t.TextMuted)
 		})
 		if len(sessions) == 0 {
 			ui.Text(c, "No sessions match.").TextColor(t.TextMuted).Padding(12, 24)
@@ -607,6 +698,20 @@ func (a *Inbox) detailView(c *ui.Context, profile profiles.Profile, snapshot *de
 				ui.Text(c, line).FontSize(11).TextColor(t.TextMuted).SingleLine().Padding(0, 24, 7, 24)
 			})
 		}).Grow(1)
+		if sessionsNext != "" || loadingMore || moreErr != "" {
+			ui.Row(c).Padding(8, 24).Gap(8).Children(func() {
+				if loadingMore {
+					ui.Text(c, "Loading more sessions…").FontSize(11).TextColor(t.TextMuted)
+				} else if moreErr != "" {
+					ui.Text(c, moreErr).FontSize(11).TextColor(t.Danger)
+				}
+				if !loadingMore && sessionsNext != "" {
+					if ui.Button(c, "Load more sessions").Clicked() {
+						a.loadMore()
+					}
+				}
+			})
+		}
 	})
 }
 
@@ -650,6 +755,22 @@ func relativeTime(unixMillis int64) string {
 	default:
 		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
 	}
+}
+
+func mergeSessions(existing, incoming []desktop.NativeSession) []desktop.NativeSession {
+	seen := make(map[string]struct{}, len(existing))
+	out := append([]desktop.NativeSession(nil), existing...)
+	for _, session := range existing {
+		seen[session.ID] = struct{}{}
+	}
+	for _, session := range incoming {
+		if _, ok := seen[session.ID]; ok {
+			continue
+		}
+		seen[session.ID] = struct{}{}
+		out = append(out, session)
+	}
+	return out
 }
 
 func sessionCount(n int) string {

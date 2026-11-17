@@ -37,7 +37,7 @@ The base image is digest-pinned. Fedora repository packages (GTK/WebKitGTK/Xvfb/
 
 1. Verifies/checks out the exact upstream SHA into `.upstream/opencode` (generated, ignored).
 2. Applies every patch in `upstream/patches/` and fails if one does not apply.
-3. Copies the ZOC-owned adapter and Vite config into the app package.
+3. Copies the ZOC-owned adapter (`platform.ts`, `storage.ts`) and Vite config into the app package.
 4. Installs upstream dependencies with `bun install --frozen-lockfile`.
 5. Runs `vite build --config vite.zoc.config.ts` with `VITE_OPENCODE_SERVER_MODE=none`.
 6. Fails if a service worker was emitted, if the root mount is missing, if lazy WASM/terminal assets disappeared, or if a localhost server URL was baked in.
@@ -54,7 +54,9 @@ The built app needs no Node/Bun and no separately installed OpenCode runtime.
 - `zoc-<version>-1.x86_64.rpm`;
 - signed update archives/manifests only when `MYGO_UPDATER_PRIVATE_KEY` and a public key are configured.
 
-`scripts/write-release-metadata.sh` appends `upstream.json` and `SHA256SUMS`.
+`scripts/write-release-metadata.sh` reads the actual `packages/app/package.json` version from the checked-out upstream commit and appends `upstream.json` and `SHA256SUMS`.
+
+The isolated signing stage uses `scripts/build-signed.sh`. It requires a verified `frontend/`, checks its SHA-256 against the handoff value, prepares the exact upstream checkout only for metadata, and runs `mygo build -skip-build-command` with the signing key. No upstream frontend script runs in that stage.
 
 ## Development loop
 
@@ -76,9 +78,9 @@ The official app is built from upstream; there is no ZOC frontend fork to hot-re
 
 Two consecutive `scripts/build.sh` runs from the same working tree on 2026-11-16 produced:
 
-- identical `zoc` executable SHA-256 `2e2c5f9f1d72a488e61e8e9857823db79dfc7e1863b568b4458f8d53a9aedb08`;
-- identical RPM SHA-256 `3ac5eb578176f5772cd20f7df73c58e233e07c7e8265d07294f82bba814846c5`;
-- identical frontend tree SHA-256 `31ce04f7359dc5349d3aca09fdcc775a26f4943082f2cfa017325f5eda2c0a89`;
+- identical `zoc` executable SHA-256 `45287162ea408c5aa79536d9cc121b53afc89ede9cf41bcd31fb6328ee36a78d`;
+- identical RPM SHA-256 `9fc30201506295d9c91b750c8f4cbac6a083e473352e99d1afeee516452e0d61`;
+- identical frontend tree SHA-256 `71458607b57abdae714978d750b648b6b0d23de4cec274ee6d95ca8c9ddeb7fc`;
 - different `tar.gz` SHA-256s, because gzip records a timestamp in its header.
 
 The archive difference is packaging metadata, not code. Release metadata records the upstream SHA, toolchain versions, adapter hashes and frontend hash so a release can be rebuilt from the ZOC commit and upstream SHA.

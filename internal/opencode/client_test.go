@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -84,5 +85,49 @@ func TestUnconfiguredOriginRefused(t *testing.T) {
 	}
 	if _, err := New("http://127.0.0.1:2", "", policy); err == nil {
 		t.Fatal("unconfigured origin was accepted")
+	}
+}
+
+func TestSessionsPagination(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/session" {
+			http.NotFound(w, r)
+			return
+		}
+		if got := r.URL.Query().Get("limit"); got != "100" {
+			t.Errorf("limit = %q", got)
+		}
+		switch cursor := r.URL.Query().Get("cursor"); cursor {
+		case "":
+			items := ""
+			for i := 0; i < 100; i++ {
+				if i > 0 {
+					items += ","
+				}
+				items += fmt.Sprintf(`{"id":"s%03d","projectID":"p1","title":"Session %d","time":{"created":%d,"updated":%d}}`, i, i, i, i)
+			}
+			w.Write([]byte(`{"data":[` + items + `],"cursor":{"next":"page-2"}}`))
+		case "page-2":
+			w.Write([]byte(`{"data":[{"id":"s100","projectID":"p1","title":"Session 100","time":{"created":100,"updated":100}},{"id":"s101","projectID":"p1","title":"Session 101","time":{"created":101,"updated":101}}],"cursor":{"next":null}}`))
+		default:
+			http.Error(w, "bad cursor", http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+
+	c := testClient(t, server, "")
+	first, err := c.SessionsPage(context.Background(), "", 100, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Sessions) != 100 || first.Next != "page-2" {
+		t.Fatalf("first page = %d sessions, next %q", len(first.Sessions), first.Next)
+	}
+	second, err := c.SessionsPage(context.Background(), "", 100, first.Next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Sessions) != 2 || second.Next != "" || second.Sessions[1].ID != "s101" {
+		t.Fatalf("second page = %+v", second)
 	}
 }

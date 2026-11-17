@@ -13,8 +13,8 @@ ZOC is **client-only**. It never bundles, installs, starts, supervises or update
 | Fetch/SSE transport | implemented | MyGo's Go-backed fetch, restricted to configured server origins. |
 | PTY/WebSocket transport | implemented | MyGo WebSocket through the upstream `openSocket` hook; no `Origin` header; open + `attached` frame verified in WebKit smoke. Terminal UI needs real-server verification. |
 | Desktop capabilities | implemented | Dialogs, clipboard, notifications, menus, shortcuts, deep links, window state, app-owned storage. |
-| Native UI workflow | implemented | **Servers & Inbox**: server profiles, projects, sessions, connection test, open in Web UI. |
-| Upstream sync/release | implemented | Daily/manual workflow pins the SHA, gates, builds, publishes only on success. |
+| Native UI workflow | implemented | **Servers & Inbox**: server profiles, projects, paginated sessions, connection test, open in Web UI. |
+| Upstream sync/release | implemented | Daily/manual workflow pins the SHA, gates, builds, signs in a credential-isolated job, and publishes only on success. Signing keys are not provisioned. |
 | Fedora/GNOME/Wayland acceptance | **user verification required** | CI proves WebKitGTK/Xvfb behavior, not a real Fedora desktop or real OpenCode Server. |
 
 ![ZOC Servers & Inbox](docs/assets/native-inbox.png)
@@ -25,7 +25,7 @@ See [Feature parity](docs/FEATURE_PARITY.md) and [Manual acceptance](docs/ACCEPT
 
 ## Verification snapshot
 
-- Latest artifact: [`zoc-v0.1.1`](https://github.com/zce/zoc/releases/tag/zoc-v0.1.1) (published 2026-11-16). CI `43925109520` is green on `f09b641`.
+- Latest published artifact: [`zoc-v0.1.1`](https://github.com/zce/zoc/releases/tag/zoc-v0.1.1) (published 2026-11-16, before the release-credential refinement). No new release was published from this refinement; signed updater keys remain unprovisioned.
 - CI `43919001926` on `c07f05e`: passed format/vet/tests, adapter typecheck, frontend gates, Linux packaging, WebKitGTK + Native UI smoke, and artifact upload.
 - Upstream sync publish `43917676504`: built and published `zoc-v0.1.1` from `anomalyco/opencode` `dev` at `e4606463e7d18fd126ecfac3ec04602f1e44814b`.
 - Upstream unchanged run `43918630325`: detected the same SHA and exited successfully without building or releasing.
@@ -95,7 +95,7 @@ The pinned image is defined by [Containerfile](Containerfile): Fedora 45 by dige
 
 - Real OpenCode Server workflows, real PTY terminal interaction, CJK composition, native dialogs/notifications and Fedora GNOME/Wayland rendering still require the manual checklist. CI proves WebKitGTK/Xvfb and a fixture, not the desktop.
 - The upstream `platform.draftStore` blob hook is not implemented; text drafts and settings persist in ZOC storage, but draft image bytes are not guaranteed across a restart.
-- Signed in-app updates are wired only when the updater key pair is provisioned; this build publishes plain artifacts.
+- Signed in-app updates are wired only when the updater key pair is provisioned. The signing job is credential-isolated; no build step receives the key. No signed release has been published yet.
 - The official Web UI keeps its own server registry. A ZOC profile and that registry can show the same server; removing a ZOC profile does not remove the Web UI's copy.
 - Server plugins, WSL/SSH plugin servers and all Electron-only GUI plugin host features are out of scope.
 

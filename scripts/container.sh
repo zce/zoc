@@ -38,6 +38,7 @@ podman run --rm \
   -e ZOC_PERF_DIR \
   -e ZOC_PERF_PORT \
   -e ZOC_PERF_SECONDS \
+  -e ZOC_FRONTEND_SHA \
   -e ZOC_BIN \
   -w /src \
   "${IMAGE}" "$@"

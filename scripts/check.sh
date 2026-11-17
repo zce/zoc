@@ -23,6 +23,15 @@ go test ./...
 echo "==> frontend dependencies"
 bun install --frozen-lockfile
 
+echo "==> signing policy tests"
+python3 scripts/test-signing-policy.py
+
+echo "==> release workflow credential checks"
+python3 scripts/test-workflow-security.py
+
+echo "==> adapter storage tests"
+bun test adapter
+
 echo "==> upstream checkout and adapter"
 "${ROOT}/scripts/prepare-upstream.sh"
 (cd "${ROOT}/.upstream/opencode" && bun install --frozen-lockfile)

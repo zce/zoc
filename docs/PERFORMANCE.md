@@ -58,6 +58,7 @@ WebKitGTK renders and networks in separate processes; the app process alone unde
 ## What is not measured yet
 
 - A 10–30 minute **real session** with streaming, scrolling and tool output. The recorded run is a 10-minute stable idle home screen; `scripts/perf.sh` supports `ZOC_PERF_SECONDS=1800` for a longer run.
+- CPU of WebKit child processes. The recorded 0.13 s is the ZOC main process only; the full WebKit process tree CPU was not measured.
 - A real OpenCode Server and real terminal latency.
 - Long transcript scroll smoothness.
 - Terminal startup/input/output latency.

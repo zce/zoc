@@ -8,35 +8,53 @@
 2. Find the newest published `zoc-v<semver>` release and read its `upstream.json`.
 3. If the upstream SHA is unchanged, exit successfully without building or releasing.
 4. Compute the next ZOC patch version, independent of OpenCode's package version, and verify the tag is unused.
-5. Build the pinned image, run `scripts/check.sh`, build artifacts, and run the WebKitGTK smoke test.
-6. Generate release notes from the upstream compare and ZOC history.
-7. Verify signed update metadata only if both keys are provisioned.
-8. Tag `zoc-v<version>` at the tested commit, push the tag, publish the release with artifacts and `upstream.json`.
+5. Check the signing continuity policy against the previous stable release.
+6. In the unprivileged `verify` job, build the pinned image, run `scripts/check.sh`, build **unsigned** artifacts, and run the WebKitGTK + Native UI smoke test. This job has no signing key or write token.
+7. Hand the verified static frontend, identified by SHA-256, to the isolated `sign` job. It runs ZOC's Go/MyGo build with `-skip-build-command`, so no upstream build script executes with the updater key present.
+8. In the `publish` job, verify checksums and channel signing state, smoke-test the exact artifact, generate notes, then tag and publish. This job has a write token but no signing key.
 
-Any failure before step 8 publishes nothing. The previous release remains installable.
+Any failure before the final publish publishes nothing. The previous release remains installable.
 
 Manual dispatch has a `publish` boolean. Set it to `false` for a full dry run that builds and gates but does not tag or publish. Set `force` to `true` only for a deliberate ZOC patch release that must ship while the upstream SHA is unchanged; otherwise an unchanged upstream exits successfully without a release.
 
 ## Build pinning
 
-`ZOC_UPSTREAM_COMMIT` overrides the SHA in `upstream/upstream.json` for a build. The script validates the 40-character SHA, fetches exactly that commit, checks it out, cleans the generated checkout, applies patches with `git apply --check`, and records the SHA in `build/linux-amd64/upstream.json`.
+`ZOC_UPSTREAM_COMMIT` overrides the SHA in `upstream/upstream.json` for a build. The script validates the 40-character SHA, fetches exactly that commit, checks it out, cleans the generated checkout, applies patches with `git apply --check`, and records the SHA in `build/linux-amd64/upstream.json`. Release metadata reads `packages/app/package.json` from that exact checkout, not the repository baseline; the metadata test in the build record changes the package version and confirms it propagates.
 
 `upstream/upstream.json` is the local/repository baseline used by developer builds. The automation does not push to `main`; each release's attached `upstream.json` is the authoritative record of what was built. Update the repository baseline in a reviewed PR when adopting a new SHA for local builds.
+
+## Credential separation
+
+The `verify` job holds no signing secret and no write-capable GitHub token. It runs the untrusted upstream dependency installation and Vite build, ZOC gates, packaging and smoke. The `sign` job receives only the verified frontend archive, the exact upstream SHA/version and the signing key. It does not run `buildCommand` or any upstream script; `scripts/build-signed.sh` checks the frontend hash, prepares the upstream checkout only for source metadata, and invokes MyGo's own signing/packaging path. The `publish` job receives the signed or unsigned archive, not the signing key, verifies checksums, runs the final smoke on that artifact, and only then tags and publishes.
+
+`deltas: 0` is deliberate: delta generation would make the signing job query GitHub release history, and full signed archives keep that job free of a GitHub credential. The release still carries a signed update archive and manifest.
+
+## Signing continuity
+
+`scripts/signing-policy.py` checks the previous stable release before any build:
+
+- no previous release + no keys: unsigned release allowed;
+- both keys: first signed release allowed;
+- previous signed release: both keys required, and the public key must match `updaterPublicKey` from the previous `upstream.json`;
+- previous signed release with missing/incomplete metadata: fail closed;
+- a manifest asset without matching signed metadata: fail closed.
+
+The workflow downloads the previous `upstream.json`, detects a previous update manifest, and fails before building when the policy is inconsistent. Unit tests cover initial unsigned, first signed, continued signed, missing key, changed key, partial keys and inconsistent metadata.
 
 ## Release metadata
 
 Every release includes `upstream.json` with at least:
 
 - repository, branch, full commit SHA;
-- upstream package name and version;
 - ZOC SemVer;
 - MyGo, Go and Bun versions;
 - adapter patch identifiers and SHA-256 hashes;
 - adapter source hashes;
+- actual `packages/app/package.json` version from the checked-out upstream commit;
 - frontend tree SHA-256;
 - build image identifier;
 - build timestamp;
-- update signing state;
+- update signing state and public updater key when signed;
 - `serviceWorker: false`.
 
 `SHA256SUMS` covers every attached file.
@@ -52,9 +70,9 @@ Every release includes `upstream.json` with at least:
 Signed in-app updates require a key pair. The owner must generate it in a Podman container and provision secrets; this automation does not create keys.
 
 ```sh
-podman run --rm -it -v "$PWD:/src:Z" -w /src \
+podman run --rm -it -v "$PWD:/src:z" -w /src \
   localhost/zoc-build:2026-11-16 \
-  bash -lc 'go run github.com/egoist/mygo/cmd/mygo keygen -o /tmp/zoc-keys && cat /tmp/zoc-keys/mygo-update.pub'
+  bash -lc 'bun x mygo-cli keygen -o /tmp/zoc-keys && cat /tmp/zoc-keys/mygo-update.pub'
 ```
 
 Then:

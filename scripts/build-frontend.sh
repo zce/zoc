@@ -55,7 +55,7 @@ cp -a "${DIST}/." "${ROOT}/frontend/"
 cat >"${ROOT}/.cache/frontend-build.json" <<EOF
 {
   "upstreamCommit": "${COMMIT}",
-  "packageVersion": "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["packageVersion"])' "${ROOT}/upstream/upstream.json")",
+  "packageVersion": "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "${UPSTREAM_DIR}/packages/app/package.json")",
   "builtAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "serviceWorker": false
 }
