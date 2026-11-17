@@ -15,12 +15,22 @@ fi
 UPSTREAM_DIR="${ZOC_UPSTREAM_DIR:-${ROOT}/.upstream/opencode}"
 COMMIT="${ZOC_UPSTREAM_COMMIT:-$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["commit"])' "${ROOT}/upstream/upstream.json")}"
 BRANCH="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["branch"])' "${ROOT}/upstream/upstream.json")"
-PACKAGE="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["name"])' "${UPSTREAM_DIR}/packages/app/package.json")"
-PACKAGE_VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "${UPSTREAM_DIR}/packages/app/package.json")"
-ACTUAL_COMMIT="$(git -C "${UPSTREAM_DIR}" rev-parse HEAD 2>/dev/null || true)"
-if [[ "${ACTUAL_COMMIT}" != "${COMMIT}" ]]; then
-  echo "error: checked-out upstream ${ACTUAL_COMMIT:-<missing>} does not match ${COMMIT}" >&2
-  exit 1
+if [[ -n "${ZOC_UPSTREAM_PACKAGE:-}" || -n "${ZOC_UPSTREAM_PACKAGE_VERSION:-}" ]]; then
+  # The isolated signing stage has no upstream checkout. It receives the
+  # package identity from the credential-free build that produced and
+  # verified the frontend; the pinned commit SHA remains authoritative.
+  : "${ZOC_UPSTREAM_PACKAGE:?ZOC_UPSTREAM_PACKAGE is required with ZOC_UPSTREAM_PACKAGE_VERSION}"
+  : "${ZOC_UPSTREAM_PACKAGE_VERSION:?ZOC_UPSTREAM_PACKAGE_VERSION is required with ZOC_UPSTREAM_PACKAGE}"
+  PACKAGE="${ZOC_UPSTREAM_PACKAGE}"
+  PACKAGE_VERSION="${ZOC_UPSTREAM_PACKAGE_VERSION}"
+else
+  PACKAGE="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["name"])' "${UPSTREAM_DIR}/packages/app/package.json")"
+  PACKAGE_VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "${UPSTREAM_DIR}/packages/app/package.json")"
+  ACTUAL_COMMIT="$(git -C "${UPSTREAM_DIR}" rev-parse HEAD 2>/dev/null || true)"
+  if [[ "${ACTUAL_COMMIT}" != "${COMMIT}" ]]; then
+    echo "error: checked-out upstream ${ACTUAL_COMMIT:-<missing>} does not match ${COMMIT}" >&2
+    exit 1
+  fi
 fi
 MYGO_VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["mygoVersion"])' "${ROOT}/upstream/upstream.json")"
 GO_VERSION="$(go env GOVERSION | sed 's/^go//')"

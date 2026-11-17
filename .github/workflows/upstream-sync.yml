@@ -38,6 +38,8 @@ jobs:
       sha: ${{ steps.upstream.outputs.sha }}
       signed: ${{ steps.signing.outputs.signed }}
       frontend_sha: ${{ steps.artifact.outputs.frontend_sha }}
+      package: ${{ steps.artifact.outputs.package }}
+      package_version: ${{ steps.artifact.outputs.package_version }}
       previous_sha: ${{ steps.previous.outputs.previous_sha }}
       previous_tag: ${{ steps.previous.outputs.latest_tag }}
     steps:
@@ -160,11 +162,19 @@ jobs:
         id: artifact
         if: steps.previous.outputs.changed == 'true'
         run: |
+          source scripts/mygo-cli.env
+          test "$(jq -r '.mygoVersion' upstream/upstream.json)" = "${MYGO_CLI_VERSION}"
+          mygo_bin="node_modules/@egoist/mygo-cli-linux-x64/bin/mygo"
+          test -x "${mygo_bin}"
+          echo "${MYGO_CLI_LINUX_X64_SHA256}  ${mygo_bin}" | sha256sum -c -
+          install -m 0755 "${mygo_bin}" build/zoc-mygo
           frontend_sha="$(jq -r '.frontendSha256' build/linux-amd64/upstream.json)"
           test -n "${frontend_sha}"
           test "$(jq -r '.updateSigning' build/linux-amd64/upstream.json)" = "not-provisioned"
           test ! -e build/linux-amd64/update-linux-amd64.json
           echo "frontend_sha=${frontend_sha}" >> "$GITHUB_OUTPUT"
+          echo "package=$(jq -r '.upstreamPackage' build/linux-amd64/upstream.json)" >> "$GITHUB_OUTPUT"
+          echo "package_version=$(jq -r '.upstreamPackageVersion' build/linux-amd64/upstream.json)" >> "$GITHUB_OUTPUT"
           tar -czf build/zoc-frontend.tar.gz -C frontend .
           tar -czf build/zoc-unsigned.tar.gz -C build linux-amd64 upstream.json
 
@@ -174,6 +184,14 @@ jobs:
         with:
           name: zoc-frontend
           path: build/zoc-frontend.tar.gz
+          retention-days: 2
+
+      - name: Upload pinned signing toolchain
+        if: steps.previous.outputs.changed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: zoc-signing-toolchain
+          path: build/zoc-mygo
           retention-days: 2
 
       - name: Upload unsigned artifact
@@ -219,29 +237,54 @@ jobs:
           name: zoc-frontend
           path: artifact
 
-      - name: Restore verified frontend
+      - name: Download pinned signing toolchain
+        uses: actions/download-artifact@v4
+        with:
+          name: zoc-signing-toolchain
+          path: artifact
+
+      - name: Stage trusted signing tree
         run: |
+          rm -rf /tmp/zoc-sign
+          mkdir -p /tmp/zoc-sign
+          git archive HEAD | tar -x -C /tmp/zoc-sign
           if tar -tzf artifact/zoc-frontend.tar.gz | grep -Eq '(^/|(^|/)\.\.(/|$))'; then
             echo "error: unsafe path in frontend archive" >&2
             exit 1
           fi
-          mkdir -p frontend
-          tar -xzf artifact/zoc-frontend.tar.gz -C frontend
+          if tar -tvzf artifact/zoc-frontend.tar.gz | awk '{print substr($1,1,1)}' | grep -qvE '^[-d]$'; then
+            echo "error: frontend archive contains unsupported entry types" >&2
+            exit 1
+          fi
+          mkdir -p /tmp/zoc-sign/frontend
+          tar -xzf artifact/zoc-frontend.tar.gz -C /tmp/zoc-sign/frontend
+          source /tmp/zoc-sign/scripts/mygo-cli.env
+          echo "${MYGO_CLI_LINUX_X64_SHA256}  artifact/zoc-mygo" | sha256sum -c -
+          install -m 0755 artifact/zoc-mygo /tmp/zoc-sign/mygo
+          chmod +x /tmp/zoc-sign/scripts/*.sh
+          test -x /tmp/zoc-sign/scripts/container.sh
 
       - name: Build pinned toolchain image
         run: podman build --pull=missing -f Containerfile -t localhost/zoc-build:2026-11-16 .
 
-      - name: Build and sign without running upstream scripts
+      - name: Build and sign without untrusted preparation
         env:
           ZOC_VERSION: ${{ needs.verify.outputs.version }}
           ZOC_UPSTREAM_COMMIT: ${{ needs.verify.outputs.sha }}
           ZOC_FRONTEND_SHA: ${{ needs.verify.outputs.frontend_sha }}
+          ZOC_UPSTREAM_PACKAGE: ${{ needs.verify.outputs.package }}
+          ZOC_UPSTREAM_PACKAGE_VERSION: ${{ needs.verify.outputs.package_version }}
           ZOC_UPDATER_PUBLIC_KEY: ${{ vars.ZOC_UPDATER_PUBLIC_KEY }}
           MYGO_UPDATER_PRIVATE_KEY: ${{ secrets.MYGO_UPDATER_PRIVATE_KEY }}
-        run: ./scripts/container.sh ./scripts/build-signed.sh
+        run: /tmp/zoc-sign/scripts/container.sh ./scripts/build-signed.sh
 
       - name: Stage signed artifact
-        run: tar -czf build/zoc-signed.tar.gz -C build linux-amd64 upstream.json
+        run: |
+          rm -rf build
+          mkdir -p build
+          cp -a /tmp/zoc-sign/build/linux-amd64 build/
+          cp /tmp/zoc-sign/build/upstream.json build/upstream.json
+          tar -czf build/zoc-signed.tar.gz -C build linux-amd64 upstream.json
 
       - name: Upload signed artifact
         uses: actions/upload-artifact@v4

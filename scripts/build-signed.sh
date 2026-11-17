@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Trusted signing and packaging stage.
 #
-# This script runs after the untrusted upstream build has completed and its
-# verified frontend has been handed over as an artifact. It must not run the
-# upstream frontend build command or any other code from the upstream
-# repository. Only ZOC's own Go host and MyGo's packaging/signing path run
-# while the update signing key is present.
+# This script runs in a signing workspace created from a git archive of the
+# reviewed ZOC commit. It contains the verified static frontend and a pinned,
+# hash-verified MyGo CLI binary. It must not run the upstream frontend build
+# command, install dependencies, or execute any code from the upstream
+# repository. Only ZOC's Go host and MyGo's packaging/signing path run while
+# the update signing key is present.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -14,8 +15,15 @@ cd "${ROOT}"
 : "${ZOC_VERSION:?ZOC_VERSION is required}"
 : "${ZOC_UPSTREAM_COMMIT:?ZOC_UPSTREAM_COMMIT is required}"
 : "${ZOC_FRONTEND_SHA:?ZOC_FRONTEND_SHA is required}"
+: "${ZOC_UPSTREAM_PACKAGE:?ZOC_UPSTREAM_PACKAGE is required}"
+: "${ZOC_UPSTREAM_PACKAGE_VERSION:?ZOC_UPSTREAM_PACKAGE_VERSION is required}"
 : "${ZOC_UPDATER_PUBLIC_KEY:?ZOC_UPDATER_PUBLIC_KEY is required}"
 : "${MYGO_UPDATER_PRIVATE_KEY:?MYGO_UPDATER_PRIVATE_KEY is required}"
+
+if [[ ! "${ZOC_UPSTREAM_COMMIT}" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "error: ZOC_UPSTREAM_COMMIT must be a full 40-character SHA" >&2
+  exit 1
+fi
 
 actual_frontend="$(python3 "${ROOT}/scripts/frontend-hash.py" "${ROOT}/frontend")"
 if [[ "${actual_frontend}" != "${ZOC_FRONTEND_SHA}" ]]; then
@@ -23,20 +31,20 @@ if [[ "${actual_frontend}" != "${ZOC_FRONTEND_SHA}" ]]; then
   exit 1
 fi
 
-env -u MYGO_UPDATER_PRIVATE_KEY -u ZOC_UPDATER_PUBLIC_KEY "${ROOT}/scripts/prepare-upstream.sh"
-actual_commit="$(git -C "${ROOT}/.upstream/opencode" rev-parse HEAD)"
-if [[ "${actual_commit}" != "${ZOC_UPSTREAM_COMMIT}" ]]; then
-  echo "error: upstream commit ${actual_commit} does not match ${ZOC_UPSTREAM_COMMIT}" >&2
+# The signing workspace carries only this pinned MyGo binary. Refuse to run
+# if it is missing or is not the expected release build for the locked MyGo
+# version.
+# shellcheck disable=SC1091
+source "${ROOT}/scripts/mygo-cli.env"
+[[ -x "${ROOT}/mygo" ]] || { echo "error: pinned MyGo CLI is missing" >&2; exit 1; }
+actual_mygo="$(sha256sum "${ROOT}/mygo" | awk '{print $1}')"
+if [[ "${actual_mygo}" != "${MYGO_CLI_LINUX_X64_SHA256}" ]]; then
+  echo "error: MyGo CLI ${actual_mygo} does not match pinned ${MYGO_CLI_LINUX_X64_SHA256}" >&2
   exit 1
 fi
 
-# The checkout and dependency installation do not need the signing key. Run
-# them with the sensitive variables removed so package lifecycle scripts or
-# git helpers cannot read them.
-env -u MYGO_UPDATER_PRIVATE_KEY -u ZOC_UPDATER_PUBLIC_KEY bun install --frozen-lockfile
-
 echo "==> Signed MyGo build (upstream build command skipped)"
-bun run build -- -skip-build-command
+"${ROOT}/mygo" build -skip-build-command
 
 "${ROOT}/scripts/write-release-metadata.sh"
 

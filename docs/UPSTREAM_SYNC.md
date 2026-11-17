@@ -10,7 +10,7 @@
 4. Compute the next ZOC patch version, independent of OpenCode's package version, and verify the tag is unused.
 5. Check the signing continuity policy against the previous stable release.
 6. In the unprivileged `verify` job, build the pinned image, run `scripts/check.sh`, build **unsigned** artifacts, and run the WebKitGTK + Native UI smoke test. This job has no signing key or write token.
-7. Hand the verified static frontend, identified by SHA-256, to the isolated `sign` job. It runs ZOC's Go/MyGo build with `-skip-build-command`, so no upstream build script executes with the updater key present.
+7. Hand the verified static frontend (identified by SHA-256), the actual upstream package identity, and the hash-pinned MyGo CLI binary to the isolated `sign` job. It builds a trusted tree from `git archive HEAD` and runs ZOC's Go/MyGo build with `-skip-build-command`; it does not checkout or install upstream code, so no untrusted build or install script executes with the updater key present.
 8. In the `publish` job, verify checksums and channel signing state, smoke-test the exact artifact, generate notes, then tag and publish. This job has a write token but no signing key.
 
 Any failure before the final publish publishes nothing. The previous release remains installable.
@@ -19,13 +19,17 @@ Manual dispatch has a `publish` boolean. Set it to `false` for a full dry run th
 
 ## Build pinning
 
-`ZOC_UPSTREAM_COMMIT` overrides the SHA in `upstream/upstream.json` for a build. The script validates the 40-character SHA, fetches exactly that commit, checks it out, cleans the generated checkout, applies patches with `git apply --check`, and records the SHA in `build/linux-amd64/upstream.json`. Release metadata reads `packages/app/package.json` from that exact checkout, not the repository baseline; the metadata test in the build record changes the package version and confirms it propagates.
+`ZOC_UPSTREAM_COMMIT` overrides the SHA in `upstream/upstream.json` for a build. The script validates the 40-character SHA, fetches exactly that commit, checks it out, cleans the generated checkout, applies patches with `git apply --check`, and records the SHA in `build/linux-amd64/upstream.json`. The credential-free build reads `packages/app/package.json` from that exact checkout, not the repository baseline; the signing stage receives the package name and version with the verified frontend. The metadata test in the build record changes the package version and confirms it propagates.
 
 `upstream/upstream.json` is the local/repository baseline used by developer builds. The automation does not push to `main`; each release's attached `upstream.json` is the authoritative record of what was built. Update the repository baseline in a reviewed PR when adopting a new SHA for local builds.
 
 ## Credential separation
 
-The `verify` job holds no signing secret and no write-capable GitHub token. It runs the untrusted upstream dependency installation and Vite build, ZOC gates, packaging and smoke. The `sign` job receives only the verified frontend archive, the exact upstream SHA/version and the signing key. It does not run `buildCommand` or any upstream script; `scripts/build-signed.sh` checks the frontend hash, prepares the upstream checkout only for source metadata, and invokes MyGo's own signing/packaging path. The checkout and ZOC dependency installation run with `MYGO_UPDATER_PRIVATE_KEY` and `ZOC_UPDATER_PUBLIC_KEY` removed from the child environment, so install-time scripts cannot read them. The `publish` job receives the signed or unsigned archive, not the signing key, verifies checksums, runs the final smoke on that artifact, and only then creates the tag through the scoped GitHub API and publishes. Checkouts use `persist-credentials: false`, so the smoke-tested binary never runs beside a write-capable git credential.
+The `verify` job holds no signing secret and no write-capable GitHub token. It performs all upstream checkout, dependency installation, Vite build, ZOC gates, unsigned packaging and smoke. It hands the verified frontend archive, the actual upstream package identity, and the pinned MyGo CLI binary to the signing job.
+
+The `sign` job does not checkout or execute upstream code and does not install dependencies. It builds a fresh signing tree from `git archive HEAD` of the reviewed commit, extracts the verified frontend into it, copies the pinned MyGo CLI only after checking its SHA-256 against `scripts/mygo-cli.env`, and runs `scripts/build-signed.sh` through that tree's `container.sh`. The signing container therefore contains trusted ZOC source, the verified frontend, the hash-pinned MyGo binary, and the signing key; there is no untrusted preparation process or shared process environment. `build-signed.sh` re-checks the frontend hash and the MyGo digest, skips the upstream `buildCommand`, and invokes MyGo's supported signing path. The package name and version are passed from the credential-free verify job; the pinned upstream SHA remains the source identity.
+
+The `publish` job receives the signed or unsigned archive, not the signing key, verifies checksums, runs the final smoke on that artifact, and only then creates the tag through the scoped GitHub API and publishes. Checkouts use `persist-credentials: false`, so the smoke-tested binary never runs beside a write-capable git credential.
 
 `deltas: 0` is deliberate: delta generation would make the signing job query GitHub release history, and full signed archives keep that job free of a GitHub credential. The release still carries a signed update archive and manifest.
 
@@ -50,7 +54,7 @@ Every release includes `upstream.json` with at least:
 - MyGo, Go and Bun versions;
 - adapter patch identifiers and SHA-256 hashes;
 - adapter source hashes;
-- actual `packages/app/package.json` version from the checked-out upstream commit;
+- actual `packages/app/package.json` version captured by the credential-free build from the checked-out upstream commit;
 - frontend tree SHA-256;
 - build image identifier;
 - build timestamp;
@@ -126,8 +130,8 @@ Runs before `43999786405` used the earlier single-job workflow. They remain hist
 ## Refinement tests (2026-11-17)
 
 - `python3 scripts/test-signing-policy.py`: 8 cases covering initial unsigned, first signed, continued signed, missing/changed/partial keys and inconsistent previous metadata.
-- `python3 scripts/test-workflow-security.py`: asserts the private key is absent from the publish job and untrusted build steps, write permission is only in publishing, and the signing job uses the isolated script that skips the upstream build command.
+- `python3 scripts/test-workflow-security.py`: asserts the private key is confined to the isolated signing step, the sign job never runs upstream checkout or dependency installation, the signing tree comes from `git archive HEAD`, the frontend and MyGo CLI are hash-verified, and write permission exists only in publishing.
 - `bun test adapter`: 5 storage cases covering failed set/remove/clear, ordered writes after a rejection, and initial-load retry.
-- `go test ./internal/opencode ./internal/desktop ./internal/native`: cursor pagination, snapshot cursor propagation, load-more merging, repeated-refresh ordering and server-switch invalidation.
-- Local signed build with a throwaway key: skipped the upstream frontend command, produced `update-linux-amd64.json`, passed metadata/signature checks, and passed the WebKitGTK + Native UI smoke.
+- `go test ./internal/opencode ./internal/desktop ./internal/native`: cursor pagination, snapshot cursor propagation, load-more merging, an empty filtered first page that still offers **Load more sessions** and reveals a later match, repeated-refresh ordering, stale errors and server-switch invalidation.
+- Local signed build with a throwaway key from a trusted `git archive HEAD` tree: the sentinel `prepare-upstream.sh` and `build-frontend.sh` scripts were not executed, the pinned MyGo digest and frontend hash were verified, `update-linux-amd64.json` was produced, and metadata/signature checks and the WebKitGTK + Native UI smoke passed.
 - The unsigned build produces `updateSigning: not-provisioned` and no manifest; checksums verify.

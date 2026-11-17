@@ -54,9 +54,9 @@ The built app needs no Node/Bun and no separately installed OpenCode runtime.
 - `zoc-<version>-1.x86_64.rpm`;
 - signed update archives/manifests only when `MYGO_UPDATER_PRIVATE_KEY` and a public key are configured.
 
-`scripts/write-release-metadata.sh` reads the actual `packages/app/package.json` version from the checked-out upstream commit and appends `upstream.json` and `SHA256SUMS`.
+`scripts/write-release-metadata.sh` reads the actual `packages/app/package.json` version from the checked-out upstream commit and appends `upstream.json` and `SHA256SUMS`. The isolated signing stage receives that package identity from the credential-free build instead of checking out upstream.
 
-The isolated signing stage uses `scripts/build-signed.sh`. It requires a verified `frontend/`, checks its SHA-256 against the handoff value, prepares the exact upstream checkout only for metadata, and runs `mygo build -skip-build-command` with the signing key. No upstream frontend script runs in that stage.
+The isolated signing stage uses `scripts/build-signed.sh` in a tree created from `git archive HEAD`. It requires the verified `frontend/`, checks its SHA-256 against the handoff value, checks the pinned MyGo CLI digest from `scripts/mygo-cli.env`, and runs `mygo build -skip-build-command` with the signing key. It does not install dependencies or run any upstream script.
 
 ## Development loop
 
