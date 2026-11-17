@@ -42,7 +42,7 @@ func main() {
 	// it. MyGo keeps it off by default because it blanks windows on NVIDIA,
 	// in VMs and in containers; ZOC's policy enables it on the Wayland +
 	// recent NVIDIA combination verified here, and elsewhere leaves MyGo's
-	// auto probe to decide. ZOC_DMABUF=on|off|auto overrides the policy.
+	// auto probe to decide.
 	mygo.App.SetDMABUFRenderer(dmabufRenderer())
 
 	policy, err := networkpolicy.New()
@@ -125,7 +125,7 @@ func main() {
 			)
 		}
 		if service.ReduceEffects {
-			log.Printf("zoc: reduced compositing effects (ZOC_REDUCE_EFFECTS=0 restores animations)")
+			log.Printf("zoc: reduced compositing effects")
 		}
 		if runtime.GOOS == "linux" {
 			log.Printf("zoc: window radius=%spx opaque=%v", windowRadius(), opaqueWindowDefault())
@@ -156,7 +156,7 @@ func main() {
 			// official UI.
 			Page: mygo.PageOptions{DevTools: mygo.DevToolsEnabled},
 		}
-		if runtime.GOOS == "linux" && os.Getenv("ZOC_NATIVE_TITLEBAR") != "1" {
+		if runtime.GOOS == "linux" {
 			// The official Web UI draws its own 36px title bar. Hide GTK's
 			// title bar and its buttons; the page draws the window controls
 			// in the title bar's trailing space and calls the native
@@ -254,60 +254,28 @@ func configureInputModule() {
 // draws correctly and scrolls much faster with it. Other hosts keep MyGo's
 // safer probe.
 func dmabufRenderer() mygo.DMABUFRenderer {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("ZOC_DMABUF"))) {
-	case "on":
-		return mygo.DMABUFRendererOn
-	case "off":
-		return mygo.DMABUFRendererOff
-	case "auto":
-		return mygo.DMABUFRendererAuto
-	}
-	if runtime.GOOS == "linux" && os.Getenv("WAYLAND_DISPLAY") != "" && nvidiaDriverMajor() >= 600 {
+	if nvidiaWayland() {
 		return mygo.DMABUFRendererOn
 	}
 	return mygo.DMABUFRendererAuto
 }
 
-// explicitWindowRadius returns ZOC_WINDOW_RADIUS when it is a valid pixel
-// radius.
-func explicitWindowRadius() (int, bool) {
-	raw := strings.TrimSpace(os.Getenv("ZOC_WINDOW_RADIUS"))
-	if raw == "" {
-		return 0, false
-	}
-	n, err := strconv.Atoi(raw)
-	if err != nil || n < 0 || n > 64 {
-		return 0, false
-	}
-	return n, true
-}
-
-// opaqueWindowDefault reports whether the webview should paint an opaque
-// background instead of an alpha-composited one. On NVIDIA Wayland the
-// transparent, rounded page costs substantially more per frame than the
-// square, opaque one. Asking for a rounded page radius restores the
-// transparent path unless ZOC_OPAQUE_WINDOW explicitly chooses otherwise.
-func opaqueWindowDefault() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("ZOC_OPAQUE_WINDOW"))) {
-	case "1", "true", "on":
-		return true
-	case "0", "false", "off":
-		return false
-	}
-	if radius, ok := explicitWindowRadius(); ok && radius > 0 {
-		return false
-	}
+// nvidiaWayland reports the Wayland + NVIDIA 600-series environment where
+// WebKitGTK's transparent accelerated surface is expensive. The profile is
+// deliberately fixed for that host: an opaque, square webview keeps the
+// GPU/DMA-BUF path without the per-frame alpha composition that makes the
+// rounded transparent window CPU-heavy.
+func nvidiaWayland() bool {
 	return runtime.GOOS == "linux" && os.Getenv("WAYLAND_DISPLAY") != "" && nvidiaDriverMajor() >= 600
 }
 
-// windowRadius returns the page and GTK decoration radius. The NVIDIA
-// Wayland default is square because it avoids the transparent compositing
-// path; other hosts keep the 8px rounded window. ZOC_WINDOW_RADIUS overrides
-// both the default and the page's inline radius.
+// opaqueWindowDefault reports whether the webview should paint an opaque
+// background instead of an alpha-composited one.
+func opaqueWindowDefault() bool { return nvidiaWayland() }
+
+// windowRadius returns the page and GTK decoration radius. Other hosts keep
+// the 8px rounded transparent window.
 func windowRadius() string {
-	if radius, ok := explicitWindowRadius(); ok {
-		return strconv.Itoa(radius)
-	}
 	if opaqueWindowDefault() {
 		return "0"
 	}
@@ -316,19 +284,9 @@ func windowRadius() string {
 
 // reduceEffectsDefault keeps WebKitGTK's accelerated compositing workload
 // down on the Wayland/NVIDIA combination where its backdrop filters and
-// continuous CSS animations are expensive. The page is still rendered on
-// the GPU; only the effects that trigger repeated compositing are removed.
-// ZOC_REDUCE_EFFECTS=0 restores full effects, and =1 forces the reduced mode
-// on other hosts.
-func reduceEffectsDefault() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("ZOC_REDUCE_EFFECTS"))) {
-	case "1", "true", "on", "reduced":
-		return true
-	case "0", "false", "off", "full":
-		return false
-	}
-	return runtime.GOOS == "linux" && os.Getenv("WAYLAND_DISPLAY") != "" && nvidiaDriverMajor() >= 600
-}
+// continuous CSS animations are expensive. The page is still rendered on the
+// GPU; only the effects that trigger repeated compositing are removed.
+func reduceEffectsDefault() bool { return nvidiaWayland() }
 
 // nvidiaDriverMajor returns the major version in /proc/driver/nvidia/version,
 // or 0 when the NVIDIA driver is not loaded.
@@ -364,7 +322,6 @@ await window.mygo.call("Desktop.StorageUpdate", "smoke", { key: "value" }, [])
 const storage = await window.mygo.call("Desktop.StorageItems", "smoke")
 await window.mygo.call("Desktop.WriteClipboardText", "zoc-smoke")
 const clipboard = await window.mygo.call("Desktop.ReadClipboardText")
-await window.mygo.call("Desktop.NotifyImeCursor", 8, 8, 1, 16)
 const wsURL = new URL(bootstrap.servers[0].url)
 wsURL.protocol = wsURL.protocol === "https:" ? "wss:" : "ws:"
 wsURL.pathname = "/api/experimental/persistent-pty/pty-fixture/connect"

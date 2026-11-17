@@ -48,7 +48,6 @@ for p in sorted(pathlib.Path('upstream/patches').glob('*.patch')):
 for p in [
     pathlib.Path('adapter/src/platform.ts'),
     pathlib.Path('adapter/src/storage.ts'),
-    pathlib.Path('adapter/src/ime.ts'),
     pathlib.Path('adapter/src/window-controls.ts'),
     pathlib.Path('adapter/src/zoc.css'),
     pathlib.Path('adapter/vite.zoc.config.ts'),

@@ -12,22 +12,10 @@ html[data-zoc-fullscreen="true"] [data-slot="titlebar-v2"] {
   padding-right: 0 !important;
 }
 
-/* Temporary native-titlebar comparison mode: no in-page window controls
-   and no reserved trailing space. */
-html[data-zoc-native-titlebar="1"] [data-slot="titlebar-v2"] {
-  padding-right: 0 !important;
-}
-
-html[data-zoc-native-titlebar="1"] [data-tauri-drag-region] {
-  --app-region: no-drag;
-}
-
 /*
  * Reduced compositing mode: backdrop filters and continuous CSS
  * transitions/animations make WebKitGTK's accelerated compositing
- * CPU-heavy on NVIDIA Wayland, so ZOC selects this mode there by default.
- * ZOC_REDUCE_EFFECTS=0 restores full effects; =1 forces this mode on
- * other hosts.
+ * CPU-heavy on NVIDIA Wayland, so ZOC selects this mode there.
  */
 html[data-zoc-effects="reduced"] *,
 html[data-zoc-effects="reduced"] *::before,
@@ -68,7 +56,7 @@ html[data-zoc-os="linux"] {
 /* A full-screen or maximized window has no title bar or window edge to
    round. The native GTK decoration drops its radius in those states; the
    page must drop it too, so content reaches the screen edges. !important
-   also overrides the inline ZOC_WINDOW_RADIUS value. */
+   also overrides the inline radius sent by the desktop host. */
 html[data-zoc-fullscreen="true"],
 html[data-zoc-maximized="true"] {
   --zoc-window-radius: 0px !important;
@@ -93,16 +81,6 @@ html[data-zoc-os="linux"] #root {
 html[data-zoc-os="linux"] [data-slot="titlebar-v2"] {
   border-top-left-radius: var(--zoc-window-radius);
   border-top-right-radius: var(--zoc-window-radius);
-}
-
-html[data-zoc-native-titlebar="1"],
-html[data-zoc-native-titlebar="1"] body {
-  background: var(--v2-background-bg-deep, #fafafa) !important;
-}
-
-html[data-zoc-native-titlebar="1"] #root,
-html[data-zoc-native-titlebar="1"] [data-slot="titlebar-v2"] {
-  border-radius: 0;
 }
 
 #zoc-window-controls {

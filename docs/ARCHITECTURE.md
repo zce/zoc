@@ -56,7 +56,6 @@ ZOC-owned files added to the upstream build:
 
 - `packages/app/src/zoc/platform.ts` — the `Platform` implementation and transport selection;
 - `packages/app/src/zoc/storage.ts` — ordered, error-propagating Go-backed storage;
-- `packages/app/src/zoc/ime.ts` — reports the focused editor's caret to the IME cursor bridge;
 - `packages/app/src/zoc/window-controls.ts` — the in-page minimize, maximize and close controls;
 - `packages/app/src/zoc/zoc.css` — Linux titlebar reservation, drag regions and window controls;
 - `packages/app/vite.zoc.config.ts` — reuses upstream Solid/Tailwind/theme/icon plugins, omits `vite-plugin-pwa`, and sets the upstream asset layout.
@@ -90,22 +89,21 @@ OpenCode's origin check accepts a missing `Origin` header for non-browser client
 - window state through MyGo's `StateKey`, fullscreen and zoom;
 - window minimize, maximize/restore, close, reload and DevTools bindings used by the in-page titlebar and the Web UI's menu;
 - WebKitGTK's native context menu customization;
-- IME caret positioning through `webkit_input_method_context_notify_cursor_area`;
 - app-owned settings/drafts storage under `PathUserData`, not OpenCode's data.
 
 Unsupported optional Electron capabilities (GUI plugin host, voice call state, pinch-zoom runtime toggling, diagnostic export) are omitted rather than returning fake success. The Web UI's optional feature checks then hide or skip them.
 
 ## Desktop shell
 
-On Linux the main window uses MyGo's hidden title bar with `HideWindowButtons`: GTK keeps the shadow and resizing edges, while the official Web UI draws the 36px title bar. `adapter/src/window-controls.ts` adds the minimize, maximize/restore and close controls to the titlebar's trailing 138px; the buttons call the same Go bindings as the Web UI's Window menu. Fullscreen hides both the controls and the reserved space, and fullscreen and maximized windows drop the 8px page radius so content reaches the screen edges. The titlebar carries `--app-region: drag` (MyGo's spelling of the drag mark), so dragging and double-click maximize work as they do in the Web UI's Windows layout. A native menu bar stays hidden for a hidden title bar, but its accelerators keep working.
+On Linux the main window uses MyGo's hidden title bar with `HideWindowButtons`: GTK keeps the shadow and resizing edges, while the official Web UI draws the 36px title bar. `adapter/src/window-controls.ts` adds the minimize, maximize/restore and close controls to the titlebar's trailing 138px; the buttons call the same Go bindings as the Web UI's Window menu. Fullscreen hides both the controls and the reserved space, and fullscreen and maximized windows drop the page radius so content reaches the screen edges. The titlebar carries `--app-region: drag` (MyGo's spelling of the drag mark), so dragging and double-click maximize work as they do in the Web UI's Windows layout. A native menu bar stays hidden for a hidden title bar, but its accelerators keep working.
 
 The Web UI's native context menu is customized in `internal/desktop/contextmenu.go`: navigation items (Back, Forward, Reload, Stop) are removed, link/image/media items are replaced with external open/copy actions, and editing, spelling and Inspect Element remain WebKitGTK's own items.
 
-WebKitGTK positions the IME candidate popup with document coordinates after a page scrolls. `ime.ts` reports the focused editable's caret rectangle in viewport coordinates and `internal/desktop/ime_linux.go` calls WebKitGTK's `webkit_input_method_context_notify_cursor_area` on the GTK main thread. The native call is dynamically bound with purego, so it also degrades to a no-op if the WebKitGTK version lacks the symbol. The workaround is opt-in with `ZOC_IME_CALC=1`: its approximate rectangle can fight WebKit's own updates and jitter, so the default keeps native IBus/WebKitGTK placement. On the tested Fedora host that placement is stable but offset; fixing the offset needs upstream WebKitGTK/GTK work.
+ZOC leaves IME placement to native WebKitGTK/IBus. The GTK module is selected automatically when the session runs IBus, before the window is created. On the tested Fedora host placement is stable but has a fixed offset; fixing the offset needs upstream WebKitGTK/GTK work.
 
-ZOC chooses WebKitGTK's DMA-BUF renderer before `Run`: on Wayland it enables it for Intel/AMD Mesa and NVIDIA 600-series drivers (verified with 620.70 and WebKitGTK 2.54), while older NVIDIA, virtual machines and containers keep MyGo's safe CPU fallback. `ZOC_DMABUF=on|off|auto` overrides the policy. The startup log reports which path is active.
+ZOC chooses WebKitGTK's DMA-BUF renderer before `Run`: on Wayland it enables it for Intel/AMD Mesa and NVIDIA 600-series drivers (verified with 620.70 and WebKitGTK 2.54), while older NVIDIA, virtual machines and containers keep MyGo's safe CPU fallback. The startup log reports which path is active.
 
-On NVIDIA Wayland, the service also starts with an opaque, square webview and reduced compositing effects (`ZOC_REDUCE_EFFECTS`): the transparent rounded page and continuous CSS animations make WebKitGTK's accelerated compositing CPU-heavy on that driver. The GPU path stays enabled; `ZOC_WINDOW_RADIUS=8` restores the transparent rounded window (with higher CPU), and `ZOC_REDUCE_EFFECTS=0` restores full effects. The shared-memory renderer (`ZOC_DMABUF=off`) is a diagnostic fallback, not the default, because it can change rendering quality.
+On NVIDIA Wayland, the service also starts with an opaque, square webview and reduced compositing effects: the transparent rounded page and continuous CSS animations make WebKitGTK's accelerated compositing CPU-heavy on that driver. The GPU path stays enabled. Other hosts keep the 8px rounded transparent window and full effects.
 
 ## Native UI
 

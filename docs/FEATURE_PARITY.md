@@ -27,9 +27,9 @@ Status values:
 | Keyboard navigation/shortcuts | Web + native | Upstream Web UI; native menu accelerators and `Ctrl+Shift+I`. |
 | Window chrome and controls | Native + Web | GTK's title bar is hidden on Linux; the official 36px title bar stays, with in-page minimize/maximize/close buttons, drag regions and double-click maximize. The Web UI's Window menu calls the same Go bindings. Fullscreen hides the controls and their reserved space; fullscreen and maximized windows have square corners. |
 | Native context menu | Native | WebKitGTK's menu is customized: navigation items removed; Open/Copy Link, Image and Media items added; editing, spelling and Inspect Element remain WebKitGTK's. |
-| IME caret positioning | Partial | Native WebKitGTK/IBus placement is the default: stable on the tested Fedora host but with a fixed offset. `ZOC_IME_CALC=1` enables the caret-rect workaround that calls `webkit_input_method_context_notify_cursor_area`; it can jitter and is not the default. The smoke exercises the binding; a correct fix needs upstream WebKitGTK/GTK work. |
-| Rendering backend | Native | MyGo DMA-BUF with a ZOC policy: GPU compositing on Intel/AMD Wayland and NVIDIA 600-series Wayland; CPU fallback on older NVIDIA, VMs and containers. On NVIDIA Wayland, an opaque square webview and reduced compositing effects are the default because the transparent rounded page is CPU-heavy there; `ZOC_WINDOW_RADIUS=8` restores rounded corners and `ZOC_REDUCE_EFFECTS=0` restores full effects. `ZOC_DMABUF=on\|off\|auto` overrides the renderer. The startup log reports the choices. |
-| Chinese input composition | Web + adapter | Upstream Web UI, WebKitGTK and the caret workaround above; real Fedora IME verification required. |
+| IME caret positioning | Partial | Native WebKitGTK/IBus placement: stable on the tested Fedora host but with a fixed offset. A correct fix needs upstream WebKitGTK/GTK work. |
+| Rendering backend | Native | MyGo DMA-BUF with a ZOC policy: GPU compositing on Intel/AMD Wayland and NVIDIA 600-series Wayland; CPU fallback on older NVIDIA, VMs and containers. On NVIDIA Wayland, an opaque square webview and reduced compositing effects are selected automatically because the transparent rounded page is CPU-heavy there. The startup log reports the choices. |
+| Chinese input composition | Web + adapter | Upstream Web UI and native WebKitGTK/IBus placement; real Fedora IME verification required. |
 | Menus | Native + Web | MyGo menu roles, the native app menu and the Web UI's in-page menu; window, view and edit actions cross the Go bindings. |
 | Notifications | Native | MyGo Notification; click correlation event. No notification daemon in CI. |
 | File/directory pickers, save | Native | MyGo Dialog; not interaction-tested in headless CI. |
@@ -54,7 +54,7 @@ Status values:
 - `go test ./...` — transport policy, profiles, native snapshot, storage, session route.
 - TypeScript typecheck of the adapter against upstream types.
 - Frontend gates — root mount, assets, WASM, terminal chunk, no service worker.
-- WebKitGTK smoke — official UI mounts, bridge works, storage/clipboard/IME cursor round trip, custom window controls present, `/api/info` and `/api/event` hit.
+- WebKitGTK smoke — official UI mounts, bridge works, storage/clipboard round trip, custom window controls present, `/api/info` and `/api/event` hit.
 - Reproducible packaging — RPM, archive, `upstream.json`, `SHA256SUMS`.
 
 ## Deliberate gaps

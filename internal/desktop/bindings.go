@@ -93,12 +93,6 @@ func (b *Bindings) ToggleDevTools() { b.s.ToggleDevTools() }
 // IsMaximizedWindow reports whether the Web UI window is maximized.
 func (b *Bindings) IsMaximizedWindow() bool { return b.s.IsMaximizedWindow() }
 
-// NotifyImeCursor positions WebKitGTK's input method popup at the focused
-// editor's caret, in CSS pixels of the page viewport.
-func (b *Bindings) NotifyImeCursor(x, y, width, height float64) {
-	b.s.NotifyImeCursor(x, y, width, height)
-}
-
 // StorageItems returns a storage namespace snapshot.
 func (b *Bindings) StorageItems(namespace string) (StorageSnapshot, error) {
 	return b.s.StorageItems(namespace)

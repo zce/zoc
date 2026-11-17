@@ -8,7 +8,6 @@ import type { AsyncStorage } from "@solid-primitives/storage"
 import { createSignal } from "solid-js"
 import { Desktop, events } from "./mygo"
 import type { AttachmentOptions, Bootstrap, Profile } from "./mygo"
-import { installImeCursorTracking, refreshImeCursor } from "./ime"
 import { installWindowControls } from "./window-controls"
 import { createGoStorage } from "./storage"
 import "./zoc.css"
@@ -184,12 +183,7 @@ export async function createZocPlatform(version: string): Promise<ZocRuntime> {
   if (bootstrap.info?.windowRadius) {
     document.documentElement.style.setProperty("--zoc-window-radius", `${bootstrap.info.windowRadius}px`)
   }
-  const nativeTitleBar = bootstrap.info?.nativeTitleBar === "1"
-  if (nativeTitleBar) {
-    document.documentElement.dataset.zocNativeTitlebar = "1"
-  } else {
-    installWindowControls(bootstrap.fullscreen ?? false)
-  }
+  installWindowControls(bootstrap.fullscreen ?? false)
 
   events.serverProfilesChanged.on((profiles) => seedOrigins(profiles))
 
@@ -206,7 +200,6 @@ export async function createZocPlatform(version: string): Promise<ZocRuntime> {
   const applyZoomLevel = async (level: DesktopZoomLevel) => {
     await Desktop.setZoom(level)
     setZoomLevelSignal(level)
-    refreshImeCursor()
   }
 
   const execCommand = (command: string) => {
@@ -225,16 +218,6 @@ export async function createZocPlatform(version: string): Promise<ZocRuntime> {
     } catch {
       // Clipboard permissions or a non-editable focus target.
     }
-  }
-
-  const imeOffsetX = Number(bootstrap.info?.imeOffsetX ?? 0) || 0
-  const imeOffsetY = Number(bootstrap.info?.imeOffsetY ?? 0) || 0
-  // Native IBus/WebKitGTK positioning is the default. The calculated
-  // cursor-area workaround is opt-in: it approximates contenteditable and
-  // input carets, which can fight the native one.
-  const imeCalc = bootstrap.info?.imeCalc === "1" && bootstrap.info?.imeNative !== "1"
-  if (imeCalc) {
-    installImeCursorTracking(() => zoomLevel(), { x: imeOffsetX, y: imeOffsetY })
   }
 
   const notificationActions = new Map<string, () => void>()

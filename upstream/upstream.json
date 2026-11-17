@@ -17,17 +17,12 @@
       "id": "0002-linux-vertical-titlebar",
       "file": "upstream/patches/0002-linux-vertical-titlebar.patch",
       "sha256": "a5b5859aed3b4272ccdcf2c8dea4eaa19ebe7d69cbf1246a256ae0629a0e23ca"
-    },
-    {
-      "id": "0003-zoc-terminal-ime",
-      "file": "upstream/patches/0003-zoc-terminal-ime.patch",
-      "sha256": "a31966b97876a26ae32faa49aa99b7a75bedc1771c2f338430a6e36f638ddd47"
     }
   ],
   "adapterSources": [
     {
       "file": "adapter/src/platform.ts",
-      "sha256": "01d3e8ebb863c7667de85a3ce365a6d250a600579eb8cca3e3b22947c6bb10f9"
+      "sha256": "12b6a754c54e56d2cc0d03218fcfbc6285d3e6ea4cfb3b844ffbc11765cee30f"
     },
     {
       "file": "adapter/vite.zoc.config.ts",
@@ -38,16 +33,12 @@
       "sha256": "556d5734e25d4aa0c88a9fb93456c6613ce93f17f8cc1361012132bb89782fa3"
     },
     {
-      "file": "adapter/src/ime.ts",
-      "sha256": "9f592413983f65ad4913e143fda792e1ecf59728102766dd4351b66ee4fecdff"
-    },
-    {
       "file": "adapter/src/window-controls.ts",
       "sha256": "990ff295d0014937ae641766cb1548e0946fcd58cba0e2fbfa9446e52f470259"
     },
     {
       "file": "adapter/src/zoc.css",
-      "sha256": "e3fe265ea7cd0080ded2846d2a32e53c4e4d30cfb75192589fc159c392d4b350"
+      "sha256": "7cddd80c357e817a09ea62b22f179aedc8eb696ecdb777921718f16107a50d04"
     }
   ]
 }

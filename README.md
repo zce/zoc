@@ -12,7 +12,7 @@ ZOC is **client-only**. It never bundles, installs, starts, supervises or update
 | Official Web UI host | implemented | Built from a pinned `anomalyco/opencode` `dev` SHA; PWA service worker disabled. |
 | Fetch/SSE transport | implemented | MyGo's Go-backed fetch, restricted to configured server origins. |
 | PTY/WebSocket transport | implemented | MyGo WebSocket through the upstream `openSocket` hook; no `Origin` header; open + `attached` frame verified in WebKit smoke. Terminal UI needs real-server verification. |
-| Desktop capabilities | implemented | Frameless-style Linux title bar with in-page minimize/maximize/close, native menu actions, native context menus, dialogs, clipboard, notifications, menus, shortcuts, deep links, window state, opt-in IME caret positioning, app-owned storage. |
+| Desktop capabilities | implemented | Frameless-style Linux title bar with in-page minimize/maximize/close, native menu actions, native context menus, dialogs, clipboard, notifications, menus, shortcuts, deep links, window state, native IME placement, app-owned storage. |
 | Native UI workflow | implemented | **Servers & Inbox**: server profiles, projects, paginated sessions, connection test, open in Web UI. |
 | Upstream sync/release | implemented | Daily/manual workflow pins the SHA, gates, builds, signs in a credential-isolated job, and publishes only on success. Signing keys are not provisioned. |
 | Fedora/GNOME/Wayland acceptance | **user verification required** | CI proves WebKitGTK/Xvfb behavior, not a real Fedora desktop or real OpenCode Server. |
@@ -31,7 +31,7 @@ See [Feature parity](docs/FEATURE_PARITY.md) and [Manual acceptance](docs/ACCEPT
 - Credential-isolation dry run `44000865900` on `5cbb280`: force-built and verified an unsigned artifact with `publish=false`; the sign and publish jobs were skipped as designed. No new release was created.
 - Upstream unchanged run `43918630325`: detected the same SHA and exited successfully without building or releasing.
 - Release assets for 0.1.1 were downloaded and verified with `sha256sum -c SHA256SUMS`; the released archive was installed with `install.sh` and passed the WebKitGTK + Native UI smoke. The current PR build also passes `check.sh`, unsigned `build.sh`, signed test-key `build-signed.sh`, and the WebKitGTK + Native UI smoke.
-- The fixture smoke asserts the official UI mounts in WebKitGTK, `/api/info` and `/api/event` are reached, the Go-backed WebSocket opens and receives an `attached` frame, storage/clipboard bridge round trips, the in-page window controls are present, the IME cursor binding is callable, and the Native UI inbox renders a 980×680 window.
+- The fixture smoke asserts the official UI mounts in WebKitGTK, `/api/info` and `/api/event` are reached, the Go-backed WebSocket opens and receives an `attached` frame, storage/clipboard bridge round trips, the in-page window controls are present, and the Native UI inbox renders a 980×680 window.
 - Partial real-desktop acceptance on Fedora 45 Workstation, GNOME 51.1, Wayland, against a real OpenCode Server 2.3.0: authentication, real project/session browsing, session opening, Native UI inbox rendering and a real persistent PTY creation passed. Terminal keystrokes, CJK composition, permissions/questions, attachments and native dialogs/notifications remain manual; see [Manual acceptance](docs/ACCEPTANCE.md).
 
 ## Runtime requirements
@@ -45,9 +45,9 @@ See [Feature parity](docs/FEATURE_PARITY.md) and [Manual acceptance](docs/ACCEPT
 
 ZOC does not ship Chromium, Electron, Node.js or Bun at runtime. The installed app is a single Go binary plus its desktop resources.
 
-On Wayland, ZOC enables WebKitGTK's DMA-BUF renderer automatically on Intel/AMD Mesa and on NVIDIA 600-series drivers (verified with 620.70 and WebKitGTK 2.54). Older NVIDIA drivers, virtual machines and containers keep the CPU renderer. `ZOC_DMABUF=on|off|auto` overrides the policy; `WEBKIT_DISABLE_DMABUF_RENDERER=0` forces it on at the WebKit level for diagnosis, but can leave a blank window on unsupported drivers. The startup log reports which renderer is active.
+On Wayland, ZOC enables WebKitGTK's DMA-BUF renderer automatically on Intel/AMD Mesa and on NVIDIA 600-series drivers (verified with 620.70 and WebKitGTK 2.54). Older NVIDIA drivers, virtual machines and containers keep the CPU renderer. The startup log reports which renderer is active.
 
-On the same NVIDIA Wayland combination, ZOC starts with an opaque, square webview and reduced compositing effects: the transparent rounded page and accelerated compositing are CPU-heavy there. DMA-BUF/GPU stays enabled. `ZOC_WINDOW_RADIUS=8` restores the 8px transparent rounded window (with higher CPU); `ZOC_REDUCE_EFFECTS=0` restores animations; `ZOC_OPAQUE_WINDOW=1` forces the opaque/square path on other hosts. `ZOC_DMABUF=off` remains a diagnostic shared-memory fallback and can change rendering quality.
+On the same NVIDIA Wayland combination, ZOC selects an opaque, square webview and reduced compositing effects automatically: the transparent rounded page and accelerated compositing are CPU-heavy there. DMA-BUF/GPU stays enabled. Other hosts keep the 8px rounded transparent window and full effects.
 
 ## Install the Linux artifact
 
@@ -104,7 +104,7 @@ The pinned image is defined by [Containerfile](Containerfile): Fedora 45 by dige
 - The official Web UI keeps its own server registry. A ZOC profile and that registry can show the same server; removing a ZOC profile does not remove the Web UI's copy.
 - **New Window** in the Web UI's app menu is a no-op; ZOC owns one main window, and a second window would need its own window-scoped storage and event routing.
 - WebKitGTK's spellcheck suggestions stay in the native context menu, but the Spellcheck on/off and language picker that the Electron app appends are not wired.
-- On the tested Fedora/GNOME/Wayland + IBus/Rime host, WebKitGTK's native candidate placement is stable but has a fixed offset. `ZOC_IME_CALC=1` enables the caret-rectangle workaround; it is not the default because it can fight WebKit's own updates and jitter. A fully correct fix needs upstream WebKitGTK/GTK work.
+- On the tested Fedora/GNOME/Wayland + IBus/Rime host, WebKitGTK's native candidate placement is stable but has a fixed offset. A fully correct fix needs upstream WebKitGTK/GTK work.
 - Server plugins, WSL/SSH plugin servers and all Electron-only GUI plugin host features are out of scope.
 
 ## Repository layout

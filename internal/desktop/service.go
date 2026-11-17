@@ -163,17 +163,6 @@ func (s *Service) MainWindow() *mygo.Window {
 func (s *Service) Bootstrap() Bootstrap {
 	zoom := s.GetZoom()
 	info := map[string]string{}
-	for key, env := range map[string]string{
-		"imeOffsetX":     "ZOC_IME_OFFSET_X",
-		"imeOffsetY":     "ZOC_IME_OFFSET_Y",
-		"imeNative":      "ZOC_IME_NATIVE",
-		"imeCalc":        "ZOC_IME_CALC",
-		"nativeTitleBar": "ZOC_NATIVE_TITLEBAR",
-	} {
-		if value := os.Getenv(env); value != "" {
-			info[key] = value
-		}
-	}
 	if s.WindowRadius != "" {
 		info["windowRadius"] = s.WindowRadius
 	}
@@ -630,14 +619,6 @@ func (s *Service) IsMaximizedWindow() bool {
 		return w.IsMaximized()
 	}
 	return false
-}
-
-// NotifyImeCursor tells WebKitGTK where the focused editor's caret is, in
-// CSS pixels of the page viewport. WebKitGTK otherwise uses document
-// coordinates for the input method popup after a page scrolls, which puts
-// the candidate window outside the window.
-func (s *Service) NotifyImeCursor(x, y, width, height float64) {
-	notifyImeCursor(s.MainWindow(), x, y, width, height)
 }
 
 func friendlyProbeError(err error) string {
