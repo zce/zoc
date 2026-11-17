@@ -58,6 +58,12 @@ def main() -> int:
         errors.append("build or signing job has a write token")
     if "contents: write" not in publish:
         errors.append("publish job lacks repository write permission")
+    if text.count("persist-credentials: false") != 3:
+        errors.append("checkouts retain a GitHub credential")
+    if "git push" in publish:
+        errors.append("publish job pushes with a persisted git credential")
+    if "gh api" not in publish:
+        errors.append("publish job does not create the tag through the scoped token")
     if "scripts/build-frontend.sh" in sign:
         errors.append("sign job runs the upstream frontend build")
 

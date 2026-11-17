@@ -25,7 +25,7 @@ Manual dispatch has a `publish` boolean. Set it to `false` for a full dry run th
 
 ## Credential separation
 
-The `verify` job holds no signing secret and no write-capable GitHub token. It runs the untrusted upstream dependency installation and Vite build, ZOC gates, packaging and smoke. The `sign` job receives only the verified frontend archive, the exact upstream SHA/version and the signing key. It does not run `buildCommand` or any upstream script; `scripts/build-signed.sh` checks the frontend hash, prepares the upstream checkout only for source metadata, and invokes MyGo's own signing/packaging path. The `publish` job receives the signed or unsigned archive, not the signing key, verifies checksums, runs the final smoke on that artifact, and only then tags and publishes.
+The `verify` job holds no signing secret and no write-capable GitHub token. It runs the untrusted upstream dependency installation and Vite build, ZOC gates, packaging and smoke. The `sign` job receives only the verified frontend archive, the exact upstream SHA/version and the signing key. It does not run `buildCommand` or any upstream script; `scripts/build-signed.sh` checks the frontend hash, prepares the upstream checkout only for source metadata, and invokes MyGo's own signing/packaging path. The `publish` job receives the signed or unsigned archive, not the signing key, verifies checksums, runs the final smoke on that artifact, and only then creates the tag through the scoped GitHub API and publishes. Checkouts use `persist-credentials: false`, so the smoke-tested binary never runs beside a write-capable git credential.
 
 `deltas: 0` is deliberate: delta generation would make the signing job query GitHub release history, and full signed archives keep that job free of a GitHub credential. The release still carries a signed update archive and manifest.
 
@@ -100,6 +100,8 @@ Without these, releases are plain RPM/archive artifacts and the app does not cla
 - Unchanged run `43918630325`: found the same upstream SHA and exited successfully with every build/release step skipped.
 - CI `43919001926` on `c07f05e`: passed with the final release workflow and checksum fix.
 - CI `43925109520` on `f09b641`: passed with the real-desktop acceptance evidence and native-inbox screenshot.
+- CI `43999777415` on `a6a1f83`: passed with the credential-isolated workflow, storage/pagination tests and release-security checks.
+- Credential-isolation dry run `43999786405` on `a6a1f83` (`force=true`, `publish=false`): the unprivileged verify job built and smoked the unsigned artifact, the signing job was skipped because the channel has no keys, and publishing was skipped. No release was created.
 - The downloaded `zoc-v0.1.1` assets passed `sha256sum -c SHA256SUMS`; `install.sh` installed the archive into a temporary `HOME`, and the installed binary passed the WebKitGTK + Native UI smoke.
 - `scripts/container.sh bash -lc 'sh build/linux-amd64/install.sh build/linux-amd64/zoc-0.1.0-linux-amd64.tar.gz'` installs into a temporary `HOME`; the installed `~/.local/bin/zoc` is executable and the desktop entry is written.
 
@@ -117,3 +119,14 @@ export ZOC_UPSTREAM_COMMIT=e4606463e7d18fd126ecfac3ec04602f1e44814b
 ```
 
 The values are in the release's attached `upstream.json`. The repository `VERSION`/`upstream/upstream.json` files are the baseline for local builds and may be one patch ahead of an older tag after a forced ZOC-only release; use the tag's release metadata rather than guessing. Two consecutive local builds at the same tree produced identical `zoc` and RPM hashes and an identical frontend hash.
+
+Runs before `43999786405` used the earlier single-job workflow. They remain historical evidence but do not attest to the new credential boundary.
+
+## Refinement tests (2026-11-17)
+
+- `python3 scripts/test-signing-policy.py`: 8 cases covering initial unsigned, first signed, continued signed, missing/changed/partial keys and inconsistent previous metadata.
+- `python3 scripts/test-workflow-security.py`: asserts the private key is absent from the publish job and untrusted build steps, write permission is only in publishing, and the signing job uses the isolated script that skips the upstream build command.
+- `bun test adapter`: 5 storage cases covering failed set/remove/clear, ordered writes after a rejection, and initial-load retry.
+- `go test ./internal/opencode ./internal/desktop ./internal/native`: cursor pagination, snapshot cursor propagation, load-more merging, repeated-refresh ordering and server-switch invalidation.
+- Local signed build with a throwaway key: skipped the upstream frontend command, produced `update-linux-amd64.json`, passed metadata/signature checks, and passed the WebKitGTK + Native UI smoke.
+- The unsigned build produces `updateSigning: not-provisioned` and no manifest; checksums verify.

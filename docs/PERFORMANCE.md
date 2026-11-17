@@ -22,10 +22,10 @@ These are measured baselines, not targets. The first baseline is the official We
 
 | Metric | Value |
 |---|---|
-| `zoc` executable | 110,461,191 bytes (~105.3 MiB) |
-| Embedded Web UI (`frontend/`) | 94,126,200 bytes (~89.8 MiB, including the gate manifest) |
-| RPM (0.1.1) | 40,335,640 bytes (~38.5 MiB) |
-| Archive (`tar.gz`, 0.1.1) | 40,329,750 bytes (~38.5 MiB) |
+| `zoc` executable (current PR build) | 110,473,479 bytes (~105.4 MiB) |
+| Embedded Web UI (`frontend/`) | 94,126,322 bytes (~89.8 MiB, including the gate manifest) |
+| RPM (current PR build) | 40,339,697 bytes (~38.5 MiB) |
+| Archive (`tar.gz`, current PR build) | 40,335,848 bytes (~38.5 MiB) |
 | Installed payload | executable + icon + desktop entry; no Node/Chromium/Electron |
 
 The binary is large because the official Web UI, its lazy Office/WASM assets, fonts and terminal emulator are embedded. Compression reduces the distributed artifact to about 38.5 MiB.

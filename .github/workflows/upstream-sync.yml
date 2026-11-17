@@ -44,6 +44,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Install Podman
         run: |
@@ -186,7 +187,7 @@ jobs:
           retention-days: 3
 
       - name: Dry-run summary
-        if: steps.previous.outputs.changed == 'true' && github.event.inputs.publish != 'true' && github.event_name != 'schedule'
+        if: steps.previous.outputs.changed == 'true' && steps.signing.outputs.signed != 'true' && github.event.inputs.publish != 'true' && github.event_name != 'schedule'
         run: |
           echo "Gates passed; no release was published (publish=false)."
           cat build/linux-amd64/upstream.json
@@ -204,6 +205,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Install Podman
         run: |
@@ -219,6 +221,10 @@ jobs:
 
       - name: Restore verified frontend
         run: |
+          if tar -tzf artifact/zoc-frontend.tar.gz | grep -Eq '(^/|(^|/)\.\.(/|$))'; then
+            echo "error: unsafe path in frontend archive" >&2
+            exit 1
+          fi
           mkdir -p frontend
           tar -xzf artifact/zoc-frontend.tar.gz -C frontend
 
@@ -269,6 +275,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Install Podman
         run: |
@@ -294,10 +301,15 @@ jobs:
         run: |
           mkdir -p build
           if [[ "${{ needs.verify.outputs.signed }}" == "true" ]]; then
-            tar -xzf artifact/zoc-signed.tar.gz -C build
+            archive=artifact/zoc-signed.tar.gz
           else
-            tar -xzf artifact/zoc-unsigned.tar.gz -C build
+            archive=artifact/zoc-unsigned.tar.gz
           fi
+          if tar -tzf "${archive}" | grep -Eq '(^/|(^|/)\.\.(/|$))'; then
+            echo "error: unsafe path in release archive" >&2
+            exit 1
+          fi
+          tar -xzf "${archive}" -C build
           (cd build/linux-amd64 && sha256sum -c SHA256SUMS)
 
       - name: Build pinned toolchain image
@@ -343,14 +355,12 @@ jobs:
           UPSTREAM_SHA: ${{ needs.verify.outputs.sha }}
         run: |
           tag="zoc-v${VERSION}"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" >/dev/null 2>&1; then
             echo "error: tag ${tag} already exists" >&2
             exit 1
           fi
-          git tag -a "${tag}" -m "ZOC ${VERSION} (OpenCode ${UPSTREAM_SHA})"
-          git push origin "${tag}"
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+            -f ref="refs/tags/${tag}" -f sha="$(git rev-parse HEAD)" >/dev/null
           mapfile -t assets < <(find build/linux-amd64 -maxdepth 1 -type f ! -name zoc ! -name .mygo-files -printf '%p\n' | sort)
           gh release create "${tag}" "${assets[@]}" \
             --title "ZOC ${VERSION}" \

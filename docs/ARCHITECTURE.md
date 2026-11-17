@@ -53,6 +53,7 @@ The patch set is intentionally tiny. At the pinned SHA it changes two files:
 ZOC-owned files added to the upstream build:
 
 - `packages/app/src/zoc/platform.ts` — the `Platform` implementation and transport selection;
+- `packages/app/src/zoc/storage.ts` — ordered, error-propagating Go-backed storage;
 - `packages/app/vite.zoc.config.ts` — reuses upstream Solid/Tailwind/theme/icon plugins, omits `vite-plugin-pwa`, and sets the upstream asset layout.
 
 The build regenerates `adapter/src/mygo.ts` from the bound Go service and copies the adapter files into the upstream checkout. Patches and adapter sources are hashed into every release's `upstream.json`.
