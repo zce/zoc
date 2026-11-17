@@ -54,6 +54,7 @@ func main() {
 		WindowID:      "main",
 		Policy:        policy,
 		ReduceEffects: reduceEffectsDefault(),
+		WindowRadius:  windowRadius(),
 	}
 	inbox := native.NewInbox(service)
 	service.OpenInbox = inbox.Open
@@ -126,10 +127,21 @@ func main() {
 		if service.ReduceEffects {
 			log.Printf("zoc: reduced compositing effects (ZOC_REDUCE_EFFECTS=0 restores animations)")
 		}
+		if runtime.GOOS == "linux" {
+			log.Printf("zoc: window radius=%spx opaque=%v", windowRadius(), opaqueWindowDefault())
+		}
 		if err := policy.Replace(store.Origins()); err != nil {
 			log.Fatal(err)
 		}
 
+		background := "light-dark(transparent, transparent)"
+		if opaqueWindowDefault() {
+			// The transparent webview and rounded CSD corners make the
+			// NVIDIA/Wayland compositing path substantially more expensive.
+			// A square, opaque webview keeps DMA-BUF/GPU rendering while
+			// avoiding that per-frame alpha composition.
+			background = "light-dark(#fafafa, #191515)"
+		}
 		opts := mygo.WindowOptions{
 			Title:           "ZOC",
 			URL:             "/",
@@ -138,7 +150,7 @@ func main() {
 			MinWidth:        760,
 			MinHeight:       520,
 			StateKey:        "main",
-			BackgroundColor: "light-dark(transparent, transparent)",
+			BackgroundColor: background,
 			// ZOC is a developer client; keep the Web Inspector available
 			// from View → Toggle Developer Tools for diagnosing the embedded
 			// official UI.
@@ -197,10 +209,7 @@ func applyWindowChrome() {
 	if mygo.Theme.IsDark() {
 		background = "#191515"
 	}
-	radius := "8"
-	if value := strings.TrimSpace(os.Getenv("ZOC_WINDOW_RADIUS")); value != "" {
-		radius = value
-	}
+	radius := windowRadius()
 	// Round only normal windows: the theme already squares decorated
 	// popups and maximized, full-screen and tiled windows. Excluding those
 	// states here lets the theme's own rules win without !important, which
@@ -257,6 +266,52 @@ func dmabufRenderer() mygo.DMABUFRenderer {
 		return mygo.DMABUFRendererOn
 	}
 	return mygo.DMABUFRendererAuto
+}
+
+// explicitWindowRadius returns ZOC_WINDOW_RADIUS when it is a valid pixel
+// radius.
+func explicitWindowRadius() (int, bool) {
+	raw := strings.TrimSpace(os.Getenv("ZOC_WINDOW_RADIUS"))
+	if raw == "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 || n > 64 {
+		return 0, false
+	}
+	return n, true
+}
+
+// opaqueWindowDefault reports whether the webview should paint an opaque
+// background instead of an alpha-composited one. On NVIDIA Wayland the
+// transparent, rounded page costs substantially more per frame than the
+// square, opaque one. Asking for a rounded page radius restores the
+// transparent path unless ZOC_OPAQUE_WINDOW explicitly chooses otherwise.
+func opaqueWindowDefault() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("ZOC_OPAQUE_WINDOW"))) {
+	case "1", "true", "on":
+		return true
+	case "0", "false", "off":
+		return false
+	}
+	if radius, ok := explicitWindowRadius(); ok && radius > 0 {
+		return false
+	}
+	return runtime.GOOS == "linux" && os.Getenv("WAYLAND_DISPLAY") != "" && nvidiaDriverMajor() >= 600
+}
+
+// windowRadius returns the page and GTK decoration radius. The NVIDIA
+// Wayland default is square because it avoids the transparent compositing
+// path; other hosts keep the 8px rounded window. ZOC_WINDOW_RADIUS overrides
+// both the default and the page's inline radius.
+func windowRadius() string {
+	if radius, ok := explicitWindowRadius(); ok {
+		return strconv.Itoa(radius)
+	}
+	if opaqueWindowDefault() {
+		return "0"
+	}
+	return "8"
 }
 
 // reduceEffectsDefault keeps WebKitGTK's accelerated compositing workload

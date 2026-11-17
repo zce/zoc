@@ -47,7 +47,7 @@ ZOC does not ship Chromium, Electron, Node.js or Bun at runtime. The installed a
 
 On Wayland, ZOC enables WebKitGTK's DMA-BUF renderer automatically on Intel/AMD Mesa and on NVIDIA 600-series drivers (verified with 620.70 and WebKitGTK 2.54). Older NVIDIA drivers, virtual machines and containers keep the CPU renderer. `ZOC_DMABUF=on|off|auto` overrides the policy; `WEBKIT_DISABLE_DMABUF_RENDERER=0` forces it on at the WebKit level for diagnosis, but can leave a blank window on unsupported drivers. The startup log reports which renderer is active.
 
-On the same NVIDIA Wayland combination, ZOC starts with reduced compositing effects: backdrop filters and continuous CSS animations are disabled because WebKitGTK's accelerated compositing is CPU-heavy there. The page still renders on the GPU. `ZOC_REDUCE_EFFECTS=0` restores full animations, while `=1` forces the reduced mode on other hosts. `ZOC_DMABUF=off` remains a diagnostic shared-memory fallback and can change rendering quality.
+On the same NVIDIA Wayland combination, ZOC starts with an opaque, square webview and reduced compositing effects: the transparent rounded page and accelerated compositing are CPU-heavy there. DMA-BUF/GPU stays enabled. `ZOC_WINDOW_RADIUS=8` restores the 8px transparent rounded window (with higher CPU); `ZOC_REDUCE_EFFECTS=0` restores animations; `ZOC_OPAQUE_WINDOW=1` forces the opaque/square path on other hosts. `ZOC_DMABUF=off` remains a diagnostic shared-memory fallback and can change rendering quality.
 
 ## Install the Linux artifact
 

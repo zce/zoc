@@ -105,7 +105,7 @@ WebKitGTK positions the IME candidate popup with document coordinates after a pa
 
 ZOC chooses WebKitGTK's DMA-BUF renderer before `Run`: on Wayland it enables it for Intel/AMD Mesa and NVIDIA 600-series drivers (verified with 620.70 and WebKitGTK 2.54), while older NVIDIA, virtual machines and containers keep MyGo's safe CPU fallback. `ZOC_DMABUF=on|off|auto` overrides the policy. The startup log reports which path is active.
 
-On NVIDIA Wayland, the service also starts the page with reduced compositing effects (`ZOC_REDUCE_EFFECTS`): backdrop filters and continuous CSS animations are disabled because WebKitGTK's accelerated compositing is CPU-heavy on that driver. The GPU path stays enabled; `ZOC_REDUCE_EFFECTS=0` restores full effects. The shared-memory renderer (`ZOC_DMABUF=off`) is a diagnostic fallback, not the default, because it can change rendering quality.
+On NVIDIA Wayland, the service also starts with an opaque, square webview and reduced compositing effects (`ZOC_REDUCE_EFFECTS`): the transparent rounded page and continuous CSS animations make WebKitGTK's accelerated compositing CPU-heavy on that driver. The GPU path stays enabled; `ZOC_WINDOW_RADIUS=8` restores the transparent rounded window (with higher CPU), and `ZOC_REDUCE_EFFECTS=0` restores full effects. The shared-memory renderer (`ZOC_DMABUF=off`) is a diagnostic fallback, not the default, because it can change rendering quality.
 
 ## Native UI
 

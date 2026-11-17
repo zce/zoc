@@ -51,6 +51,10 @@ type Service struct {
 	// ReduceEffects starts the page with backdrop filters and continuous
 	// animations disabled, for hosts where WebKitGTK compositing is expensive.
 	ReduceEffects bool
+	// WindowRadius is the page and GTK decoration radius in pixels, 0 for
+	// square corners. It is always sent to the page so the default can
+	// differ by host.
+	WindowRadius string
 
 	mu     sync.Mutex
 	main   *mygo.Window
@@ -165,11 +169,13 @@ func (s *Service) Bootstrap() Bootstrap {
 		"imeNative":      "ZOC_IME_NATIVE",
 		"imeCalc":        "ZOC_IME_CALC",
 		"nativeTitleBar": "ZOC_NATIVE_TITLEBAR",
-		"windowRadius":   "ZOC_WINDOW_RADIUS",
 	} {
 		if value := os.Getenv(env); value != "" {
 			info[key] = value
 		}
+	}
+	if s.WindowRadius != "" {
+		info["windowRadius"] = s.WindowRadius
 	}
 	return Bootstrap{
 		Version:       s.Version,
