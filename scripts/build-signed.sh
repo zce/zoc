@@ -23,14 +23,17 @@ if [[ "${actual_frontend}" != "${ZOC_FRONTEND_SHA}" ]]; then
   exit 1
 fi
 
-"${ROOT}/scripts/prepare-upstream.sh"
+env -u MYGO_UPDATER_PRIVATE_KEY -u ZOC_UPDATER_PUBLIC_KEY "${ROOT}/scripts/prepare-upstream.sh"
 actual_commit="$(git -C "${ROOT}/.upstream/opencode" rev-parse HEAD)"
 if [[ "${actual_commit}" != "${ZOC_UPSTREAM_COMMIT}" ]]; then
   echo "error: upstream commit ${actual_commit} does not match ${ZOC_UPSTREAM_COMMIT}" >&2
   exit 1
 fi
 
-bun install --frozen-lockfile
+# The checkout and dependency installation do not need the signing key. Run
+# them with the sensitive variables removed so package lifecycle scripts or
+# git helpers cannot read them.
+env -u MYGO_UPDATER_PRIVATE_KEY -u ZOC_UPDATER_PUBLIC_KEY bun install --frozen-lockfile
 
 echo "==> Signed MyGo build (upstream build command skipped)"
 bun run build -- -skip-build-command

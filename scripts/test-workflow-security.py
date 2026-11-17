@@ -76,6 +76,10 @@ def main() -> int:
         errors.append("signing script does not use the supported MyGo signing key")
     if "prepare-upstream.sh" not in signed:
         errors.append("signing script does not pin the upstream checkout")
+    if "env -u MYGO_UPDATER_PRIVATE_KEY -u ZOC_UPDATER_PUBLIC_KEY bun install" not in signed:
+        errors.append("signing script exposes the updater key to dependency installation")
+    if "env -u MYGO_UPDATER_PRIVATE_KEY -u ZOC_UPDATER_PUBLIC_KEY \"${ROOT}/scripts/prepare-upstream.sh\"" not in signed:
+        errors.append("signing script exposes the updater key to the upstream checkout")
 
     if errors:
         for error in errors:

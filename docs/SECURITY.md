@@ -39,7 +39,7 @@ The Electron GUI plugin host, WSL/SSH plugin servers and sidecar lifecycle are i
 The release workflow separates the untrusted upstream build from signing and publishing:
 
 - `verify` has no signing key and no write-capable token. It installs upstream dependencies, builds the official Web UI with Vite, runs tests, builds unsigned artifacts and runs the WebKitGTK smoke.
-- `sign` holds `MYGO_UPDATER_PRIVATE_KEY` but only reads repository content. It verifies the frontend hash, skips the upstream `buildCommand`, and runs MyGo's own signing path. No upstream script executes with the key.
+- `sign` holds `MYGO_UPDATER_PRIVATE_KEY` but only reads repository content. It verifies the frontend hash, skips the upstream `buildCommand`, and runs MyGo's own signing path. No upstream script executes with the key. The upstream checkout and dependency installation run with the signing variables removed from the child environment, so package lifecycle scripts cannot read them.
 - `publish` holds a write token but no signing key. It verifies checksums, runs the final smoke on the exact artifact, then tags and publishes.
 
 Signing continuity is fail-closed: once a stable release has a signed update manifest, later releases require both keys and the same public key recorded in the previous release's `upstream.json`. A missing or changed key stops the workflow before a build. Delta updates are disabled so the signing job needs no GitHub credential.
