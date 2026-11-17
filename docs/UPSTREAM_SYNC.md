@@ -101,7 +101,8 @@ Without these, releases are plain RPM/archive artifacts and the app does not cla
 - CI `43919001926` on `c07f05e`: passed with the final release workflow and checksum fix.
 - CI `43925109520` on `f09b641`: passed with the real-desktop acceptance evidence and native-inbox screenshot.
 - CI `43999777415` on `a6a1f83`: passed with the credential-isolated workflow, storage/pagination tests and release-security checks.
-- Credential-isolation dry run `43999786405` on `a6a1f83` (`force=true`, `publish=false`): the unprivileged verify job built and smoked the unsigned artifact, the signing job was skipped because the channel has no keys, and publishing was skipped. No release was created.
+- Final CI `44000865794` on `5cbb280`: passed after the scoped-tag and credential-persistence hardening.
+- Credential-isolation dry run `44000865900` on `5cbb280` (`force=true`, `publish=false`): the unprivileged verify job built and smoked the unsigned artifact, the signing job was skipped because the channel has no keys, and publishing was skipped. No release was created.
 - The downloaded `zoc-v0.1.1` assets passed `sha256sum -c SHA256SUMS`; `install.sh` installed the archive into a temporary `HOME`, and the installed binary passed the WebKitGTK + Native UI smoke.
 - `scripts/container.sh bash -lc 'sh build/linux-amd64/install.sh build/linux-amd64/zoc-0.1.0-linux-amd64.tar.gz'` installs into a temporary `HOME`; the installed `~/.local/bin/zoc` is executable and the desktop entry is written.
 

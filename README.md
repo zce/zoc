@@ -26,9 +26,9 @@ See [Feature parity](docs/FEATURE_PARITY.md) and [Manual acceptance](docs/ACCEPT
 ## Verification snapshot
 
 - Latest published artifact: [`zoc-v0.1.1`](https://github.com/zce/zoc/releases/tag/zoc-v0.1.1) (published 2026-11-16, before the release-credential refinement). No new release was published from this refinement; signed updater keys remain unprovisioned.
-- CI `43999777415` on `a6a1f83`: passed format/vet/tests, adapter typecheck, frontend gates, Linux packaging, WebKitGTK + Native UI smoke, and artifact upload.
+- CI `44000865794` on `5cbb280`: passed format/vet/tests, adapter typecheck, frontend gates, Linux packaging, WebKitGTK + Native UI smoke, and artifact upload.
 - Upstream sync publish `43917676504`: built and published `zoc-v0.1.1` from `anomalyco/opencode` `dev` at `e4606463e7d18fd126ecfac3ec04602f1e44814b` (before the credential-isolation refinement).
-- Credential-isolation dry run `43999786405` on `a6a1f83`: force-built and verified an unsigned artifact with `publish=false`; the sign and publish jobs were skipped as designed. No new release was created.
+- Credential-isolation dry run `44000865900` on `5cbb280`: force-built and verified an unsigned artifact with `publish=false`; the sign and publish jobs were skipped as designed. No new release was created.
 - Upstream unchanged run `43918630325`: detected the same SHA and exited successfully without building or releasing.
 - Release assets for 0.1.1 were downloaded and verified with `sha256sum -c SHA256SUMS`; the released archive was installed with `install.sh` and passed the WebKitGTK + Native UI smoke. The current PR build also passes `check.sh`, unsigned `build.sh`, signed test-key `build-signed.sh`, and the WebKitGTK + Native UI smoke.
 - The fixture smoke asserts the official UI mounts in WebKitGTK, `/api/info` and `/api/event` are reached, the Go-backed WebSocket opens and receives an `attached` frame, storage/clipboard bridge round trips, and the Native UI inbox renders a 980×680 window.
