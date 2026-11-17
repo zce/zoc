@@ -15,7 +15,7 @@ Status values:
 | Connect to existing server | Web + adapter | MyGo fetch through origin allowlist; fixture connection and a real local OpenCode Server (authenticated) verified. |
 | Authentication | Web + adapter | Basic password from Web UI; native inbox keeps ephemeral password in memory. Real server accepted the credential in a temporary app HOME. |
 | Reconnect / disconnect / switch | Web + adapter | Upstream registry and health machine; profiles seeded from ZOC. |
-| Browse projects/sessions | Native + Web | Native **Servers & Inbox** reads `/api/project` and `/api/session`; unit/integration tests and a real-server session list pass. Root sessions paginate with the server cursor and a **Load more sessions** action. |
+| Browse projects/sessions | Native + Web | Native **Servers & Inbox** reads `/api/project` and `/api/session`; unit/integration tests and a real-server session list pass. Root sessions paginate with the server cursor and a **Load more sessions** action. Filtering applies to loaded pages; the pagination control remains available when a page has no matches. |
 | Open existing session | Native + Web | Native computes the official session route and navigates the Web UI; a real session transcript was opened. |
 | Create session / prompt / stream | Web | Official Web UI; SSE fixture and a real server event stream connection verified. A new real model response was not measured. |
 | Stop active run | Web | Official Web UI. |

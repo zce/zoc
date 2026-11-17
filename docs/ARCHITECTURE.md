@@ -99,7 +99,7 @@ Unsupported optional Electron capabilities (GUI plugin host, voice call state, p
 
 ![Servers & Inbox](assets/native-inbox.png)
 
-Native UI state is a presentation projection. Session lists use OpenCode's opaque `cursor.next`; **Load more sessions** fetches one page at a time rather than loading all history eagerly. Refreshes carry a generation number, so an older request cannot overwrite a newer result or a server switch.
+Native UI state is a presentation projection. Session lists use OpenCode's opaque `cursor.next`; **Load more sessions** fetches one page at a time rather than loading all history eagerly. Filtering applies to loaded pages, and **Load more sessions** remains available even when the current page has no matches. Refreshes carry a generation number, so an older request cannot overwrite a newer result or a server switch.
 
 The page-side storage adapter serializes writes through Go. A failed write rejects its caller and leaves the cache at the last confirmed on-disk value; a later write retries normally. every snapshot is fetched on demand from OpenCode, with no duplicate reducer and no second SSE connection. Session transcript, composer, permissions, questions and terminal remain in the Web UI.
 

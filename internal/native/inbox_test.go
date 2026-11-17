@@ -181,6 +181,40 @@ func TestInboxLoadsMoreSessions(t *testing.T) {
 	}
 }
 
+func TestInboxShowsLoadMoreWhenFilterMatchesNoLoadedSessions(t *testing.T) {
+	backend := &fakeBackend{
+		servers: []profiles.Profile{{ID: "srv", Name: "Work", URL: "http://127.0.0.1:4096"}},
+		snapshot: desktop.ServerSnapshot{
+			Server:       profiles.Profile{ID: "srv", Name: "Work", URL: "http://127.0.0.1:4096"},
+			Projects:     []desktop.NativeProject{{ID: "p1", Name: "zoc"}},
+			Sessions:     []desktop.NativeSession{{ID: "ses-1", ProjectID: "p1", Title: "Unrelated session", Updated: 2}},
+			SessionsNext: "page-2",
+		},
+		page: desktop.NativeSessionPage{
+			Sessions: []desktop.NativeSession{{ID: "ses-2", ProjectID: "p1", Title: "Needle session", Updated: 1}},
+		},
+		moreCalled: make(chan struct{}, 1),
+	}
+	app := &Inbox{
+		backend: backend, servers: backend.servers, selected: "srv",
+		snapshot: &backend.snapshot, sessionsNext: "page-2", passwords: map[string]string{},
+		filter: "needle",
+	}
+	tt := ui.NewTester(app.view, 980, 680)
+	if !tt.HasText("No loaded sessions match") || !tt.HasText("Load more sessions") {
+		t.Fatalf("empty filtered view lost pagination: %q", tt.Texts())
+	}
+	if err := tt.Click("Load more sessions"); err != nil {
+		t.Fatal(err)
+	}
+	<-backend.moreCalled
+	waitFor(t, func() bool { return app.snapshot != nil && len(app.snapshot.Sessions) == 2 })
+	tt.Frame()
+	if !tt.HasText("Needle session") || !tt.HasText("1 matching loaded sessions") {
+		t.Fatalf("later page match not shown: %q", tt.Texts())
+	}
+}
+
 func TestStaleRefreshCannotOverwriteNewerResult(t *testing.T) {
 	release := []chan struct{}{make(chan struct{}), make(chan struct{})}
 	started := make(chan int, 2)

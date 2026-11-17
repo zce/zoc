@@ -661,7 +661,7 @@ func (a *Inbox) detailView(c *ui.Context, profile profiles.Profile, snapshot *de
 		ui.Row(c).Padding(0, 24, 6, 24).Children(func() {
 			label := sessionCount(len(sessions))
 			if filter != "" {
-				label = fmt.Sprintf("%d matching sessions", len(sessions))
+				label = fmt.Sprintf("%d matching loaded sessions", len(sessions))
 			}
 			if sessionsNext != "" {
 				label += " · more available"
@@ -669,41 +669,45 @@ func (a *Inbox) detailView(c *ui.Context, profile profiles.Profile, snapshot *de
 			ui.Text(c, label).FontSize(11).TextColor(t.TextMuted)
 		})
 		if len(sessions) == 0 {
-			ui.Text(c, "No sessions match.").TextColor(t.TextMuted).Padding(12, 24)
-			return
-		}
-		ui.List(c, nil, len(sessions), func(i int) {
-			session := sessions[i]
-			row := ui.Column(c).Padding(8, 24).Gap(3).FillWidth()
-			if session.Busy {
-				row.BorderStartWidth(2).BorderColor(t.Accent)
+			message := "No sessions match."
+			if filter != "" && sessionsNext != "" {
+				message = "No loaded sessions match. Load more sessions to search older sessions."
 			}
-			row.Children(func() {
-				title := ui.Text(c, session.Title).FontSize(13).SingleLine().FillWidth().Padding(6, 24, 1, 24)
-				if title.RowClicked() {
-					if err := a.backend.OpenSession(profile.ID, session.ID); err != nil {
-						a.mu.Lock()
-						a.loadErr = err.Error()
-						a.mu.Unlock()
-						a.invalidate()
-						return
-					}
-					a.backend.FocusMain()
-				}
-				meta := session.ProjectID
-				for _, project := range projects {
-					if project.ID == session.ProjectID {
-						meta = project.Name
-						break
-					}
-				}
-				line := meta + " · " + relativeTime(session.Updated)
+			ui.Text(c, message).TextColor(t.TextMuted).Padding(12, 24)
+		} else {
+			ui.List(c, nil, len(sessions), func(i int) {
+				session := sessions[i]
+				row := ui.Column(c).Padding(8, 24).Gap(3).FillWidth()
 				if session.Busy {
-					line += " · running"
+					row.BorderStartWidth(2).BorderColor(t.Accent)
 				}
-				ui.Text(c, line).FontSize(11).TextColor(t.TextMuted).SingleLine().Padding(0, 24, 7, 24)
-			})
-		}).Grow(1)
+				row.Children(func() {
+					title := ui.Text(c, session.Title).FontSize(13).SingleLine().FillWidth().Padding(6, 24, 1, 24)
+					if title.RowClicked() {
+						if err := a.backend.OpenSession(profile.ID, session.ID); err != nil {
+							a.mu.Lock()
+							a.loadErr = err.Error()
+							a.mu.Unlock()
+							a.invalidate()
+							return
+						}
+						a.backend.FocusMain()
+					}
+					meta := session.ProjectID
+					for _, project := range projects {
+						if project.ID == session.ProjectID {
+							meta = project.Name
+							break
+						}
+					}
+					line := meta + " · " + relativeTime(session.Updated)
+					if session.Busy {
+						line += " · running"
+					}
+					ui.Text(c, line).FontSize(11).TextColor(t.TextMuted).SingleLine().Padding(0, 24, 7, 24)
+				})
+			}).Grow(1)
+		}
 		if sessionsNext != "" || loadingMore || moreErr != "" {
 			ui.Row(c).Padding(8, 24).Gap(8).Children(func() {
 				if loadingMore {
