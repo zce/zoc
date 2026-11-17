@@ -190,14 +190,23 @@ jobs:
           path: build/zoc-mygo
           retention-days: 2
 
+      # Keep this upload to one path. With multiple paths, upload-artifact
+      # preserves their common parent, which would put the archive under
+      # build/ in the artifact and break the publish job's restore step.
       - name: Upload unsigned artifact
         if: steps.previous.outputs.changed == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: zoc-unsigned
-          path: |
-            build/zoc-unsigned.tar.gz
-            .cache/smoke/smoke-inbox.png
+          path: build/zoc-unsigned.tar.gz
+          retention-days: 3
+
+      - name: Upload Native UI smoke screenshot
+        if: steps.previous.outputs.changed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: zoc-smoke
+          path: .cache/smoke/smoke-inbox.png
           retention-days: 3
 
       - name: Dry-run summary
