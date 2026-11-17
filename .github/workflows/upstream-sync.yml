@@ -43,7 +43,7 @@ jobs:
       previous_sha: ${{ steps.previous.outputs.previous_sha }}
       previous_tag: ${{ steps.previous.outputs.latest_tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -176,7 +176,7 @@ jobs:
 
       - name: Upload verified frontend for the signing job
         if: steps.previous.outputs.changed == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: zoc-frontend
           path: build/zoc-frontend.tar.gz
@@ -184,7 +184,7 @@ jobs:
 
       - name: Upload pinned signing toolchain
         if: steps.previous.outputs.changed == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: zoc-signing-toolchain
           path: build/zoc-mygo
@@ -195,7 +195,7 @@ jobs:
       # build/ in the artifact and break the publish job's restore step.
       - name: Upload unsigned artifact
         if: steps.previous.outputs.changed == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: zoc-unsigned
           path: build/zoc-unsigned.tar.gz
@@ -203,10 +203,11 @@ jobs:
 
       - name: Upload Native UI smoke screenshot
         if: steps.previous.outputs.changed == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: zoc-smoke
           path: .cache/smoke/smoke-inbox.png
+          include-hidden-files: true
           retention-days: 3
 
       - name: Dry-run summary
@@ -225,7 +226,7 @@ jobs:
       contents: read
       actions: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -237,13 +238,13 @@ jobs:
           podman --version
 
       - name: Download verified frontend
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: zoc-frontend
           path: artifact
 
       - name: Download pinned signing toolchain
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: zoc-signing-toolchain
           path: artifact
@@ -292,7 +293,7 @@ jobs:
           tar -czf build/zoc-signed.tar.gz -C build linux-amd64 upstream.json
 
       - name: Upload signed artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: zoc-signed
           path: build/zoc-signed.tar.gz
@@ -320,7 +321,7 @@ jobs:
       contents: write
       actions: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -333,14 +334,14 @@ jobs:
 
       - name: Download signed artifact
         if: needs.verify.outputs.signed == 'true'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: zoc-signed
           path: artifact
 
       - name: Download unsigned artifact
         if: needs.verify.outputs.signed != 'true'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: zoc-unsigned
           path: artifact
