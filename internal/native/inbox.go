@@ -229,7 +229,6 @@ func (a *Inbox) refresh() {
 			a.mu.Unlock()
 			return
 		}
-		a.loadCancel = nil
 		a.loading = false
 		if err != nil {
 			if ctx.Err() == nil {
