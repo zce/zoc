@@ -221,6 +221,52 @@ func TestStaleRefreshCannotOverwriteNewerResult(t *testing.T) {
 	}
 }
 
+func TestStaleRefreshErrorCannotOverwriteNewerResult(t *testing.T) {
+	release := []chan struct{}{make(chan struct{}), make(chan struct{})}
+	started := make(chan int, 2)
+	var calls atomic.Int32
+	backend := &fakeBackend{
+		servers: []profiles.Profile{{ID: "srv", Name: "Work", URL: "http://127.0.0.1:4096"}},
+		snapshotFn: func(ctx context.Context, id, password string) (desktop.ServerSnapshot, error) {
+			n := int(calls.Add(1))
+			started <- n
+			<-release[n-1]
+			if n == 1 {
+				return desktop.ServerSnapshot{}, errors.New("stale failure")
+			}
+			return desktop.ServerSnapshot{
+				Server:   profiles.Profile{ID: id, Name: "Work", URL: "http://127.0.0.1:4096"},
+				Sessions: []desktop.NativeSession{{ID: "ses", Title: "new"}},
+			}, nil
+		},
+	}
+	app := &Inbox{backend: backend, servers: backend.servers, selected: "srv", passwords: map[string]string{}}
+	app.refresh()
+	if n := <-started; n != 1 {
+		t.Fatalf("first call = %d", n)
+	}
+	app.refresh()
+	if n := <-started; n != 2 {
+		t.Fatalf("second call = %d", n)
+	}
+	close(release[1])
+	waitFor(t, func() bool {
+		app.mu.Lock()
+		defer app.mu.Unlock()
+		return app.snapshot != nil && app.snapshot.Sessions[0].Title == "new" && app.loadErr == ""
+	})
+	close(release[0])
+	time.Sleep(30 * time.Millisecond)
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	if app.loadErr != "" {
+		t.Fatalf("stale error = %q", app.loadErr)
+	}
+	if app.snapshot == nil || app.snapshot.Sessions[0].Title != "new" {
+		t.Fatalf("stale error replaced newer result: %+v", app.snapshot)
+	}
+}
+
 func TestMergeSessionsDeduplicates(t *testing.T) {
 	got := mergeSessions(
 		[]desktop.NativeSession{{ID: "a", Title: "A"}, {ID: "b", Title: "B"}},

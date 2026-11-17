@@ -57,6 +57,7 @@ type Inbox struct {
 	loadingMore  bool
 	moreErr      string
 	loadSeq      uint64
+	loadCtx      context.Context
 	loadCancel   context.CancelFunc
 
 	projectName string
@@ -126,6 +127,7 @@ func (a *Inbox) Open() {
 			a.loadCancel()
 			a.loadCancel = nil
 		}
+		a.loadCtx = nil
 		a.loading = false
 		a.loadingMore = false
 		a.passwords = map[string]string{}
@@ -208,6 +210,7 @@ func (a *Inbox) refresh() {
 		a.loadCancel()
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	a.loadCtx = ctx
 	a.loadCancel = cancel
 	password := a.passwords[profile.ID]
 	serverID := profile.ID
@@ -256,13 +259,17 @@ func (a *Inbox) loadMore() {
 	cursor := a.sessionsNext
 	serverID := profile.ID
 	password := a.passwords[profile.ID]
+	ctx := a.loadCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	a.loadingMore = true
 	a.moreErr = ""
 	a.mu.Unlock()
 	a.invalidate()
 
 	go func() {
-		page, err := a.backend.SessionsPage(context.Background(), serverID, password, cursor)
+		page, err := a.backend.SessionsPage(ctx, serverID, password, cursor)
 		a.mu.Lock()
 		if a.loadSeq != seq || a.selected != serverID {
 			a.mu.Unlock()

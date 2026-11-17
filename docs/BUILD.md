@@ -76,10 +76,10 @@ The official app is built from upstream; there is no ZOC frontend fork to hot-re
 
 ## Reproducibility check
 
-Two consecutive `scripts/build.sh` runs from the same working tree on 2026-11-16 produced:
+Two consecutive `scripts/build.sh` runs from the same working tree on 2026-11-17 produced:
 
-- identical `zoc` executable SHA-256 `45287162ea408c5aa79536d9cc121b53afc89ede9cf41bcd31fb6328ee36a78d`;
-- identical RPM SHA-256 `9fc30201506295d9c91b750c8f4cbac6a083e473352e99d1afeee516452e0d61`;
+- identical `zoc` executable SHA-256 `99f1695b37ee15f50d9dddb09a8ffd7177c42d2f18397d1e211d5848bd8e80d7`;
+- identical RPM SHA-256 `92bbb4d9fc2b375dbbbd65f555350ed89ef45b8695114e234546dc86f24473d3`;
 - identical frontend tree SHA-256 `71458607b57abdae714978d750b648b6b0d23de4cec274ee6d95ca8c9ddeb7fc`;
 - different `tar.gz` SHA-256s, because gzip records a timestamp in its header.
 
