@@ -25,7 +25,7 @@ See [Feature parity](docs/FEATURE_PARITY.md) and [Manual acceptance](docs/ACCEPT
 
 ## Verification snapshot
 
-- Latest published artifact: [`zoc-v0.1.3`](https://github.com/zce/zoc/releases/tag/zoc-v0.1.3) (published 2026-11-17). It carries the Linux desktop shell, native context menu, opt-in IME workaround, DMA-BUF policy and 8px CSD corners. Signed updater keys remain unprovisioned.
+- Latest published artifact: [`zoc-v0.1.4`](https://github.com/zce/zoc/releases/tag/zoc-v0.1.4) (published 2026-11-17). It carries the cleaned Linux desktop shell: native context menu, native IME placement, the NVIDIA Wayland opaque-square GPU profile, and the standard rounded transparent profile elsewhere. Signed updater keys remain unprovisioned.
 - CI `44000865794` on `5cbb280`: passed format/vet/tests, adapter typecheck, frontend gates, Linux packaging, WebKitGTK + Native UI smoke, and artifact upload.
 - Upstream sync publish `43917676504`: built and published `zoc-v0.1.1` from `anomalyco/opencode` `dev` at `e4606463e7d18fd126ecfac3ec04602f1e44814b` (before the credential-isolation refinement).
 - Credential-isolation dry run `44000865900` on `5cbb280`: force-built and verified an unsigned artifact with `publish=false`; the sign and publish jobs were skipped as designed. No new release was created.
